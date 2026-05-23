@@ -1,0 +1,10 @@
+.env
+*.json
+__pycache__/
+*.pyc
+*.log
+*.xlsx
+venv/
+.venv/
+.DS_Store
+.superpowers/
