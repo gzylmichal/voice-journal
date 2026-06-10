@@ -106,3 +106,57 @@ def test_mark_written_is_noop_for_unknown_batch_id():
 def test_mark_written_noop_when_no_buffer_file():
     # Should not raise even with no buffer file
     mark_written(TEST_DATE, "any-id", "tasks")
+
+
+# ---------------------------------------------------------------------------
+# C: archive_transcript — raw + filtered txt audit trail
+# ---------------------------------------------------------------------------
+
+def test_archive_transcript_writes_txt_file(tmp_path, monkeypatch):
+    import pipeline.storage as storage_mod
+    monkeypatch.setattr(storage_mod, "ARCHIVE_TRANSCRIPTS_DIR", tmp_path)
+    from pipeline.storage import archive_transcript
+
+    transcript = {
+        "file": "memo_001.m4a",
+        "time": "18:30",
+        "text": "Bench press three sets",
+        "raw_text": "Bench press three sets Thank you.",
+    }
+    archive_transcript(transcript, TEST_DATE)
+
+    txt_path = tmp_path / TEST_DATE.isoformat() / "memo_001.txt"
+    assert txt_path.exists(), f"Expected {txt_path} to exist"
+    content = txt_path.read_text(encoding="utf-8")
+    assert "memo_001.m4a" in content
+    assert "raw whisper output" in content
+    assert "Thank you." in content
+    assert "filtered output" in content
+    assert "Bench press three sets" in content
+
+
+def test_archive_files_writes_transcript_txt(tmp_path, monkeypatch):
+    """archive_files with transcripts kwarg writes .txt alongside the audio."""
+    import shutil
+    import pipeline.storage as storage_mod
+    monkeypatch.setattr(storage_mod, "ARCHIVE_AUDIO_DIR", tmp_path / "audio")
+    monkeypatch.setattr(storage_mod, "ARCHIVE_TRANSCRIPTS_DIR", tmp_path / "transcripts")
+    from pipeline.storage import archive_files
+
+    # Create a fake audio file to be moved
+    audio_file = tmp_path / "memo_002.m4a"
+    audio_file.write_bytes(b"\x00" * 10)
+
+    transcript = {
+        "file": "memo_002.m4a",
+        "time": "09:00",
+        "text": "Pull-ups eight reps",
+        "raw_text": "Pull-ups eight reps Dziękuję.",
+    }
+    archive_files([audio_file], TEST_DATE, transcripts=[transcript])
+
+    txt_path = tmp_path / "transcripts" / TEST_DATE.isoformat() / "memo_002.txt"
+    assert txt_path.exists()
+    content = txt_path.read_text(encoding="utf-8")
+    assert "Dziękuję" in content
+    assert "Pull-ups" in content

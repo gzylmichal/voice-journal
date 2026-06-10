@@ -284,3 +284,116 @@ def test_build_muscle_pie_svg_returns_svg():
     assert "Chest" in result
     assert "33%" in result or "34%" in result  # 12/36 ≈ 33%
     assert "Last 7 Days" in result
+
+
+# ---------------------------------------------------------------------------
+# A1: keyword pre-filter — LLM must not be called on workout-only transcripts
+# ---------------------------------------------------------------------------
+
+def test_pre_filter_workout_only_skips_llm():
+    """Workout memo with no weigh-in phrase → no AI call."""
+    with patch("ai_client.call_ai") as mock_ai:
+        from pipeline.extractors import extract_bodyweight
+        transcripts = [{"time": "18:00", "text": "Bench press 80 kg 8 reps, 3 sets"}]
+        result = extract_bodyweight(None, transcripts, date(2026, 5, 20))
+        assert result == {"detected": False}
+        mock_ai.assert_not_called()
+
+
+def test_pre_filter_weigh_in_phrase_calls_llm():
+    """Transcript with 'i weigh' → LLM IS called."""
+    with patch("ai_client.call_ai", return_value='{"detected": true, "weight_kg": 82.0}') as mock_ai:
+        from pipeline.extractors import extract_bodyweight
+        transcripts = [{"time": "18:00", "text": "I weigh 82 kilos today"}]
+        result = extract_bodyweight(None, transcripts, date(2026, 5, 20))
+        assert result == {"detected": True, "weight_kg": 82.0}
+        mock_ai.assert_called_once()
+
+
+def test_pre_filter_polish_phrase_calls_llm():
+    """Polish weigh-in phrase → LLM IS called."""
+    with patch("ai_client.call_ai", return_value='{"detected": true, "weight_kg": 84.0}') as mock_ai:
+        from pipeline.extractors import extract_bodyweight
+        transcripts = [{"time": "07:00", "text": "Zważyłem się rano, 84 kilo"}]
+        result = extract_bodyweight(None, transcripts, date(2026, 5, 20))
+        assert result["detected"] is True
+        mock_ai.assert_called_once()
+
+
+def test_pre_filter_polish_workout_skips_llm():
+    """Polish workout memo without any weigh-in phrase → no AI call."""
+    with patch("ai_client.call_ai") as mock_ai:
+        from pipeline.extractors import extract_bodyweight
+        transcripts = [{"time": "18:00", "text": "Wyciskanie 80 kilo, 8 powtórzeń, 3 serie"}]
+        result = extract_bodyweight(None, transcripts, date(2026, 5, 20))
+        assert result == {"detected": False}
+        mock_ai.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# A3: validate_bodyweight
+# ---------------------------------------------------------------------------
+
+def test_validate_bodyweight_accepts_small_delta():
+    """80 → 81 kg (1.25% delta) — should be accepted."""
+    with patch("pipeline.notion_client.requests.post") as mock_post, \
+         patch("pipeline.notion_client.NOTION_TOKEN", "tok"), \
+         patch("pipeline.notion_client.NOTION_BODYWEIGHT_DB_ID", "db-bw"):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "results": [{"properties": {"Weight (kg)": {"number": 80.0}}}]
+        }
+        from pipeline.extractors import validate_bodyweight
+        assert validate_bodyweight(81.0, date(2026, 5, 20)) is True
+
+
+def test_validate_bodyweight_rejects_large_delta():
+    """80 → 95 kg (18.75% delta) — should be rejected."""
+    with patch("pipeline.notion_client.requests.post") as mock_post, \
+         patch("pipeline.notion_client.NOTION_TOKEN", "tok"), \
+         patch("pipeline.notion_client.NOTION_BODYWEIGHT_DB_ID", "db-bw"):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "results": [{"properties": {"Weight (kg)": {"number": 80.0}}}]
+        }
+        from pipeline.extractors import validate_bodyweight
+        assert validate_bodyweight(95.0, date(2026, 5, 20)) is False
+
+
+def test_validate_bodyweight_rejects_out_of_range():
+    """300 kg is outside hard range — rejected regardless of history."""
+    with patch("pipeline.notion_client.requests.post") as mock_post, \
+         patch("pipeline.notion_client.NOTION_TOKEN", "tok"), \
+         patch("pipeline.notion_client.NOTION_BODYWEIGHT_DB_ID", "db-bw"):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {"results": []}
+        from pipeline.extractors import validate_bodyweight
+        assert validate_bodyweight(300.0, date(2026, 5, 20)) is False
+
+
+def test_validate_bodyweight_no_history_accepts_within_range():
+    """No previous weight in DB — accept any value within 40–250 kg."""
+    with patch("pipeline.notion_client.requests.post") as mock_post, \
+         patch("pipeline.notion_client.NOTION_TOKEN", "tok"), \
+         patch("pipeline.notion_client.NOTION_BODYWEIGHT_DB_ID", "db-bw"):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {"results": []}
+        from pipeline.extractors import validate_bodyweight
+        assert validate_bodyweight(82.0, date(2026, 5, 20)) is True
+
+
+# ---------------------------------------------------------------------------
+# A2: Prompt content — negative-rule keywords must be present
+# ---------------------------------------------------------------------------
+
+def test_bodyweight_prompt_has_negative_rules():
+    from pipeline.prompts import BODYWEIGHT_SYSTEM_PROMPT
+    prompt_lower = BODYWEIGHT_SYSTEM_PROMPT.lower()
+    assert "exercise" in prompt_lower or "workout" in prompt_lower
+    assert "never" in prompt_lower or "not" in prompt_lower
+    assert "ważę" in prompt_lower or "zważyłem" in prompt_lower
+
+
+def test_bodyweight_prompt_has_polish_examples():
+    from pipeline.prompts import BODYWEIGHT_SYSTEM_PROMPT
+    assert "ważę" in BODYWEIGHT_SYSTEM_PROMPT.lower() or "zważył" in BODYWEIGHT_SYSTEM_PROMPT.lower()

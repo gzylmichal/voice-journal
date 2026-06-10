@@ -7,7 +7,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from pipeline.config import ARCHIVE_AUDIO_DIR, ARCHIVE_MD_DIR, BUFFER_DIR
+from pipeline.config import ARCHIVE_AUDIO_DIR, ARCHIVE_MD_DIR, ARCHIVE_TRANSCRIPTS_DIR, BUFFER_DIR
 
 log = logging.getLogger(__name__)
 
@@ -21,10 +21,52 @@ def save_markdown(content: str, today: date) -> Path:
     return filepath
 
 
-def archive_files(files: List[Path], today: date):
-    """Move processed audio files into a dated subdirectory of the audio archive."""
+def archive_transcript(transcript: dict, today: date):
+    """Write a raw + filtered transcript txt file for audit purposes.
+
+    File path: archive/transcripts/YYYY-MM-DD/<audio-stem>.txt
+    Contains: filename, timestamp, raw Whisper text, filtered text, dropped segment count.
+    """
+    filename = transcript.get("file", "unknown")
+    stem = Path(filename).stem
+    day_dir = ARCHIVE_TRANSCRIPTS_DIR / today.isoformat()
+    day_dir.mkdir(parents=True, exist_ok=True)
+    txt_path = day_dir / f"{stem}.txt"
+
+    raw_text = transcript.get("raw_text", "")
+    filtered_text = transcript.get("text", "")
+    timestamp = transcript.get("time", "")
+
+    lines = [
+        f"file: {filename}",
+        f"timestamp: {timestamp}",
+        f"date: {today.isoformat()}",
+        "",
+        "--- raw whisper output ---",
+        raw_text,
+        "",
+        "--- filtered output ---",
+        filtered_text,
+    ]
+    try:
+        txt_path.write_text("\n".join(lines), encoding="utf-8")
+        log.info(f"Transcript archived: {txt_path}")
+    except Exception as e:
+        log.error(f"Failed to archive transcript for {filename}: {e}")
+
+
+def archive_files(files: List[Path], today: date, transcripts: Optional[List[dict]] = None):
+    """Move processed audio files into a dated subdirectory of the audio archive.
+
+    If transcripts is provided, also writes a raw+filtered txt for each file.
+    """
     day_dir = ARCHIVE_AUDIO_DIR / today.isoformat()
     day_dir.mkdir(parents=True, exist_ok=True)
+
+    transcript_map = {}
+    if transcripts:
+        transcript_map = {t.get("file"): t for t in transcripts if t.get("file")}
+
     for f in files:
         dest = day_dir / f.name
         try:
@@ -32,6 +74,9 @@ def archive_files(files: List[Path], today: date):
             log.info(f"Archived: {f.name} → {dest}")
         except Exception as e:
             log.error(f"Failed to archive {f.name}: {e}")
+
+        if f.name in transcript_map:
+            archive_transcript(transcript_map[f.name], today)
 
 
 def get_buffer_path(d: date) -> Path:

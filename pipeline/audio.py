@@ -11,9 +11,68 @@ from typing import List, Optional
 
 from groq import Groq
 
-from pipeline.config import INBOX_DIR, SUPPORTED_FORMATS, TRANSCRIPT_LANGUAGE, WHISPER_MODEL
+from pipeline.config import (
+    INBOX_DIR,
+    SUPPORTED_FORMATS,
+    TRANSCRIPT_LANGUAGE,
+    WHISPER_MODEL,
+    WHISPER_PROMPT,
+    WHISPER_NO_SPEECH_PROB_THRESHOLD,
+    WHISPER_AVG_LOGPROB_THRESHOLD,
+    WHISPER_COMPRESSION_RATIO_THRESHOLD,
+)
 
 log = logging.getLogger(__name__)
+
+# Known Whisper hallucinations that appear as entire segments on silence/noise.
+WHISPER_FILLER_HALLUCINATIONS = {
+    "Thank you.",
+    "Thanks for watching.",
+    "Thanks for watching",
+    "Thank you for watching.",
+    "Dziękuję.",
+    "Dziękuję za uwagę.",
+    "Napisy stworzone przez społeczność Amara.org",
+    "Napisy stworzone przez społeczność Amara.org.",
+    "Amara.org",
+    ".",
+    "...",
+}
+
+
+def _filter_segments(segments: list) -> tuple:
+    """
+    Drop low-quality segments from a verbose_json transcription result.
+
+    Returns (filtered_text, dropped_count).
+    """
+    kept = []
+    dropped = 0
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        no_speech = seg.get("no_speech_prob", 0.0)
+        avg_logprob = seg.get("avg_logprob", 0.0)
+        compression = seg.get("compression_ratio", 0.0)
+
+        if no_speech > WHISPER_NO_SPEECH_PROB_THRESHOLD:
+            log.debug(f"Dropped segment (no_speech_prob={no_speech:.2f}): {text!r}")
+            dropped += 1
+            continue
+        if avg_logprob < WHISPER_AVG_LOGPROB_THRESHOLD:
+            log.debug(f"Dropped segment (avg_logprob={avg_logprob:.2f}): {text!r}")
+            dropped += 1
+            continue
+        if compression > WHISPER_COMPRESSION_RATIO_THRESHOLD:
+            log.debug(f"Dropped segment (compression_ratio={compression:.2f}): {text!r}")
+            dropped += 1
+            continue
+        if text in WHISPER_FILLER_HALLUCINATIONS:
+            log.debug(f"Dropped filler hallucination: {text!r}")
+            dropped += 1
+            continue
+        kept.append(text)
+
+    return " ".join(kept).strip(), dropped
 
 
 def get_inbox_files() -> List[Path]:
@@ -72,7 +131,7 @@ def _denoise_audio(audio_path: Path) -> Optional[Path]:
 
 
 def transcribe_file(client: Groq, audio_path: Path) -> dict:
-    """Transcribe a single audio file. Returns dict with metadata + text."""
+    """Transcribe a single audio file. Returns dict with metadata, filtered text, and raw_text."""
     file_size_mb = audio_path.stat().st_size / (1024 * 1024)
     mod_time = datetime.fromtimestamp(audio_path.stat().st_mtime)
 
@@ -84,7 +143,8 @@ def transcribe_file(client: Groq, audio_path: Path) -> dict:
             "file": audio_path.name,
             "time": mod_time.strftime("%H:%M"),
             "text": f"[Skipped: file too large ({file_size_mb:.1f} MB)]",
-            "error": True
+            "raw_text": "",
+            "error": True,
         }
 
     denoised_path = _denoise_audio(audio_path)
@@ -95,39 +155,41 @@ def transcribe_file(client: Groq, audio_path: Path) -> dict:
             whisper_kwargs = {
                 "file": (audio_path.name, f.read()),
                 "model": WHISPER_MODEL,
-                "response_format": "text",
+                "response_format": "verbose_json",
+                "temperature": 0,
+                "prompt": WHISPER_PROMPT,
             }
             if TRANSCRIPT_LANGUAGE not in ("auto", ""):
                 whisper_kwargs["language"] = TRANSCRIPT_LANGUAGE
-
-            # Vocabulary hint for both English and Polish — memos may be in either
-            # language or mix both. Whisper auto-detects per file; the prompt steers
-            # it toward gym terminology in whichever language is spoken.
-            whisper_kwargs["prompt"] = (
-                "Smith machine bench press, Bulgarian split squat, pull-ups, chin-ups, "
-                "deadlift, Romanian deadlift, squat, leg press, cable rows, lat pulldown, "
-                "overhead press, dumbbell, barbell, kg, reps, sets, bodyweight, "
-                "wyciskanie na Smithu, przysiady bułgarskie, podciąganie, martwy ciąg, "
-                "rumuński martwy ciąg, wiosłowanie, wyciskanie żołnierskie, "
-                "hantle, sztanga, kilogramy, serie, powtórzenia, "
-                "60 kg, 70 kg, 80 kg, 85 kg, 90 kg, 95 kg, 100 kg, "
-                "3 powtórzenia, 5 powtórzeń, 8 powtórzeń, 10 powtórzeń, 12 powtórzeń, "
-                "3 serie, 4 serie, 5 serii, 8 serii"
-            )
 
             transcription = client.audio.transcriptions.create(**whisper_kwargs)
 
         if denoised_path and denoised_path.exists():
             denoised_path.unlink()
 
-        text = transcription.strip() if isinstance(transcription, str) else transcription.text.strip()
-        log.info(f"Transcribed {audio_path.name}: {len(text)} chars")
+        # Extract text from verbose_json response; fall back to plain text attribute.
+        segments = getattr(transcription, "segments", None)
+        if segments is not None:
+            raw_text = " ".join((seg.get("text") or "").strip() for seg in segments).strip()
+            filtered_text, dropped = _filter_segments(segments)
+            if dropped:
+                log.info(f"Segment filter: {dropped} segment(s) dropped for {audio_path.name}")
+        else:
+            raw_text = (
+                transcription.strip() if isinstance(transcription, str)
+                else (getattr(transcription, "text", "") or "").strip()
+            )
+            filtered_text = raw_text
+            dropped = 0
+
+        log.info(f"Transcribed {audio_path.name}: {len(filtered_text)} chars ({dropped} segments dropped)")
 
         return {
             "file": audio_path.name,
             "time": mod_time.strftime("%H:%M"),
-            "text": text,
-            "error": False
+            "text": filtered_text,
+            "raw_text": raw_text,
+            "error": False,
         }
 
     except Exception as e:
@@ -136,5 +198,6 @@ def transcribe_file(client: Groq, audio_path: Path) -> dict:
             "file": audio_path.name,
             "time": mod_time.strftime("%H:%M"),
             "text": f"[Transcription failed: {e}]",
-            "error": True
+            "raw_text": "",
+            "error": True,
         }

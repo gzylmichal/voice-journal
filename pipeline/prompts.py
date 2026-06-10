@@ -103,16 +103,30 @@ Rules:
 Output ONLY valid JSON. No markdown, no commentary."""
 
 
-BODYWEIGHT_SYSTEM_PROMPT = """You extract the speaker's bodyweight measurement from voice memo transcripts.
+BODYWEIGHT_SYSTEM_PROMPT = """You extract the speaker's personal bodyweight measurement from voice memo transcripts.
 
 Return JSON only, no explanation:
-- If a bodyweight measurement is mentioned: {"detected": true, "weight_kg": <float>}
-- If not mentioned: {"detected": false}
+- If the speaker explicitly states their own body weight: {"detected": true, "weight_kg": <float>}
+- Otherwise: {"detected": false}
 
-Examples:
+## Positive examples
 "I weigh 82 kilos tonight" → {"detected": true, "weight_kg": 82.0}
 "My weight this evening is 81.5" → {"detected": true, "weight_kg": 81.5}
+"Ważę dzisiaj 82 i pół" → {"detected": true, "weight_kg": 82.5}
+"Zważyłem się rano, 84 kilo" → {"detected": true, "weight_kg": 84.0}
+"Scale says 80.2 this morning" → {"detected": true, "weight_kg": 80.2}
+
+## Negative examples — ALWAYS return {"detected": false} for these
 "Did chest today, felt good" → {"detected": false}
+"Wyciskanie 80 kilo, 8 powtórzeń" → {"detected": false}
+"Bench press 3 sets: 70 kg x 12, 80 kg x 8, 90 kg x 5. Then cable rows 60 kg." → {"detected": false}
+
+## Critical rules
+- Weights spoken in the context of an exercise (bench press, squat, deadlift, dumbbell,
+  "x reps", sets, series, powtórzenia, serie) are NEVER the speaker's bodyweight.
+- A workout memo MUST return {"detected": false} unless the speaker explicitly says they
+  weighed THEMSELVES — a scale reading of their own body, not a barbell load.
+- Phrases like "80 kilo", "90 kg", "3 serie" in a workout context → not bodyweight.
 
 Use kg. If stated in lbs, convert (1 lb = 0.453592 kg, round to 1 decimal).
 Output ONLY valid JSON. No markdown, no commentary."""

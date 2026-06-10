@@ -93,18 +93,24 @@ def upload():
         log.warning(f"Unauthorized upload attempt from {request.remote_addr}")
         return jsonify({"error": "unauthorized"}), 401
 
-    # Check for file
-    if "file" not in request.files:
+    # Accept multipart upload (curl/web) or raw binary body (iOS Shortcuts)
+    if "file" in request.files:
+        file = request.files["file"]
+        ext = Path(file.filename).suffix.lower() if file.filename else ".m4a"
+        if ext not in ALLOWED_EXTENSIONS:
+            return jsonify({"error": f"unsupported format: {ext}"}), 400
+        audio_data = file.read()
+    elif request.data:
+        ct_map = {
+            "audio/x-m4a": ".m4a", "audio/mp4": ".m4a", "audio/mpeg": ".mp3",
+            "audio/wav": ".wav", "audio/ogg": ".ogg", "audio/flac": ".flac",
+            "audio/webm": ".webm", "audio/x-caf": ".caf",
+        }
+        ct = (request.content_type or "").split(";")[0].strip()
+        ext = ct_map.get(ct, ".m4a")
+        audio_data = request.data
+    else:
         return jsonify({"error": "no file in request"}), 400
-
-    file = request.files["file"]
-    if not file.filename:
-        return jsonify({"error": "empty filename"}), 400
-
-    # Validate extension
-    ext = Path(file.filename).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        return jsonify({"error": f"unsupported format: {ext}"}), 400
 
     # Generate timestamped filename
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -113,10 +119,11 @@ def upload():
 
     # Save
     INBOX_DIR.mkdir(parents=True, exist_ok=True)
-    file.save(str(dest))
+    dest.write_bytes(audio_data)
 
     file_size_kb = dest.stat().st_size / 1024
     log.info(f"Received: {safe_name} ({file_size_kb:.0f} KB) from {request.remote_addr}")
+
 
     # Trigger the pipeline immediately in the background (non-blocking).
     # --mode upload: transcribes, writes workout/tasks/calendar to Notion/GCal,

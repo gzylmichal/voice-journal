@@ -10,7 +10,21 @@ import ai_client
 from pipeline.config import GCAL_ENABLED, NOTION_ENABLED
 from pipeline.prompts import BODYWEIGHT_SYSTEM_PROMPT, CALENDAR_SYSTEM_PROMPT, TASK_SYSTEM_PROMPT, WORKOUT_SYSTEM_PROMPT
 
+_BODYWEIGHT_MIN_KG = 40.0
+_BODYWEIGHT_MAX_KG = 250.0
+_BODYWEIGHT_MAX_DAY_DELTA_FRAC = 0.05  # 5% of last known weight
+
 log = logging.getLogger(__name__)
+
+# Phrases that indicate the speaker is stating their own body weight.
+# If none appear in the combined transcript, skip the LLM call entirely.
+BODYWEIGHT_WEIGH_IN_PHRASES = [
+    # English
+    "i weigh", "my weight", "weighed myself", "body weight is",
+    "bodyweight is", "on the scale", "scale says",
+    # Polish
+    "ważę", "zważyłem", "zważyłam", "moja waga", "waga wynosi", "na wadze",
+]
 
 # Order matters: more specific keywords first to avoid mismatch.
 MUSCLE_GROUP_RULES = [
@@ -293,6 +307,41 @@ def extract_calendar_events(groq_client, transcripts: List[dict], recording_date
         return []
 
 
+def validate_bodyweight(weight_kg: float, recording_date: date) -> bool:
+    """Return True if weight_kg is plausible for a human on recording_date.
+
+    Rejects:
+    - Values outside the hard range 40–250 kg.
+    - Values that deviate >5% from the most recent recorded bodyweight.
+    """
+    if not (_BODYWEIGHT_MIN_KG <= weight_kg <= _BODYWEIGHT_MAX_KG):
+        log.warning(
+            f"Bodyweight validation failed: {weight_kg:.1f} kg outside hard range "
+            f"[{_BODYWEIGHT_MIN_KG}–{_BODYWEIGHT_MAX_KG}]"
+        )
+        return False
+
+    try:
+        from pipeline.notion_client import fetch_latest_bodyweight
+        last = fetch_latest_bodyweight(recording_date)
+    except Exception as e:
+        log.warning(f"Bodyweight validation: could not fetch last weight ({e}), accepting on hard range alone")
+        return True
+
+    if last is None:
+        return True
+
+    delta_frac = abs(weight_kg - last) / last
+    if delta_frac > _BODYWEIGHT_MAX_DAY_DELTA_FRAC:
+        log.warning(
+            f"Bodyweight validation failed: {weight_kg:.1f} kg deviates {delta_frac:.1%} "
+            f"from last known {last:.1f} kg (max {_BODYWEIGHT_MAX_DAY_DELTA_FRAC:.0%})"
+        )
+        return False
+
+    return True
+
+
 def extract_bodyweight(groq_client, transcripts: List[dict], recording_date: date) -> dict:
     """Extract bodyweight measurement from transcripts. Returns {"detected": True/False, "weight_kg": float}."""
     combined_text = "\n\n".join(
@@ -300,6 +349,11 @@ def extract_bodyweight(groq_client, transcripts: List[dict], recording_date: dat
         for t in transcripts if not t.get("error")
     )
     if not combined_text.strip():
+        return {"detected": False}
+
+    text_lower = combined_text.lower()
+    if not any(phrase in text_lower for phrase in BODYWEIGHT_WEIGH_IN_PHRASES):
+        log.info("Bodyweight: no weigh-in phrase found — skipping LLM call")
         return {"detected": False}
 
     user_message = (

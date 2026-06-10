@@ -57,13 +57,34 @@ GCAL_ENABLED = bool(_GCAL_AVAILABLE and GCAL_TOKEN_FILE.exists())
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-BASE_DIR          = Path(os.getenv("BASE_DIR", "/opt/voice-journal"))
-INBOX_DIR         = BASE_DIR / "inbox"
-ARCHIVE_AUDIO_DIR = BASE_DIR / "archive" / "audio"
-ARCHIVE_MD_DIR    = BASE_DIR / "archive" / "markdown"
-BUFFER_DIR        = BASE_DIR / "buffer"
+BASE_DIR                = Path(os.getenv("BASE_DIR", "/opt/voice-journal"))
+INBOX_DIR               = BASE_DIR / "inbox"
+ARCHIVE_AUDIO_DIR       = BASE_DIR / "archive" / "audio"
+ARCHIVE_MD_DIR          = BASE_DIR / "archive" / "markdown"
+ARCHIVE_TRANSCRIPTS_DIR = BASE_DIR / "archive" / "transcripts"
+BUFFER_DIR              = BASE_DIR / "buffer"
 
 # ---------------------------------------------------------------------------
 # Audio formats
 # ---------------------------------------------------------------------------
 SUPPORTED_FORMATS = {".m4a", ".mp3", ".wav", ".mp4", ".ogg", ".flac", ".webm", ".caf"}
+
+# ---------------------------------------------------------------------------
+# Whisper transcription settings
+# ---------------------------------------------------------------------------
+# Vocabulary hint for Whisper — exercise names and units only, no numeric examples.
+# Numeric examples bias Whisper to reproduce those exact strings (hallucination cause).
+# Keep under ~200 tokens (Whisper truncates at 224). Overridable via WHISPER_PROMPT env var.
+WHISPER_PROMPT = os.getenv("WHISPER_PROMPT", (
+    "Smith machine bench press, Bulgarian split squat, pull-ups, chin-ups, deadlift, "
+    "Romanian deadlift, leg press, cable row, lat pulldown, overhead press, dumbbell, "
+    "barbell, kg, reps, sets, bodyweight, kilograms, curls, extension, triceps, biceps, "
+    "Hack-squat, squat, hamstrings, quad, "
+    "wyciskanie, przysiady bułgarskie, podciąganie, martwy ciąg, "
+    "wiosłowanie, wyciskanie żołnierskie, hantle, sztanga, kilogramy, serie, powtórzenia"
+))
+
+# Whisper hallucination filter thresholds
+WHISPER_NO_SPEECH_PROB_THRESHOLD = float(os.getenv("WHISPER_NO_SPEECH_PROB_THRESHOLD", "0.6"))
+WHISPER_AVG_LOGPROB_THRESHOLD = float(os.getenv("WHISPER_AVG_LOGPROB_THRESHOLD", "-1.0"))
+WHISPER_COMPRESSION_RATIO_THRESHOLD = float(os.getenv("WHISPER_COMPRESSION_RATIO_THRESHOLD", "2.4"))

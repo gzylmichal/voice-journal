@@ -49,6 +49,7 @@ from pipeline.extractors import (
     extract_tasks,
     extract_workout,
     format_workout_table,
+    validate_bodyweight,
 )
 from pipeline.notion_client import (
     create_notion_tasks,
@@ -166,11 +167,14 @@ def run_upload_mode():
         bodyweight.get("weight_kg") if bodyweight.get("detected") else None
     ) or fetch_latest_bodyweight(recording_date)
 
-    # Store bodyweight if newly detected
+    # Store bodyweight if newly detected and passes plausibility check
     if bodyweight.get("detected") and NOTION_BODYWEIGHT_DB_ID and batch_id:
-        ok = store_bodyweight(bodyweight["weight_kg"], recording_date)
-        if ok:
-            mark_written(recording_date, batch_id, "bodyweight")
+        if validate_bodyweight(bodyweight["weight_kg"], recording_date):
+            ok = store_bodyweight(bodyweight["weight_kg"], recording_date)
+            if ok:
+                mark_written(recording_date, batch_id, "bodyweight")
+        else:
+            log.warning(f"Bodyweight {bodyweight['weight_kg']:.1f} kg failed validation — not stored")
 
     # Write workout to DB — pass resolved bodyweight for bodyweight exercises
     wk_created = 0
@@ -197,7 +201,7 @@ def run_upload_mode():
         if batch_id:
             mark_written(recording_date, batch_id, "events")
 
-    archive_files(files, recording_date)
+    archive_files(files, recording_date, transcripts=successful)
 
     wk_info   = f" · Workout: {workout.get('workout_name', '?')} ({wk_created} rows)" if workout.get("detected") else ""
     task_info = f" · {tasks_created}/{len(tasks)} tasks" if tasks else ""
@@ -273,10 +277,13 @@ def run_overnight_mode():
 
         bw = entry.get("bodyweight") or {}
         if entry.get("bodyweight_written_at") is None and bw.get("detected") and NOTION_BODYWEIGHT_DB_ID:
-            ok = store_bodyweight(bw["weight_kg"], recording_date)
-            if ok:
-                mark_written(recording_date, batch_id, "bodyweight")
-            log.info(f"Retry bodyweight write (batch {batch_id}): {'ok' if ok else 'failed'}")
+            if validate_bodyweight(bw["weight_kg"], recording_date):
+                ok = store_bodyweight(bw["weight_kg"], recording_date)
+                if ok:
+                    mark_written(recording_date, batch_id, "bodyweight")
+                log.info(f"Retry bodyweight write (batch {batch_id}): {'ok' if ok else 'failed'}")
+            else:
+                log.warning(f"Retry bodyweight {bw['weight_kg']:.1f} kg failed validation — not stored (batch {batch_id})")
 
     journal_md = format_journal_entry(groq_client, transcripts, recording_date)
 
