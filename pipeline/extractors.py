@@ -194,7 +194,7 @@ def extract_workout(groq_client, transcripts: List[dict], recording_date: date) 
     log.info("Extracting workout data...")
 
     try:
-        raw = ai_client.call_ai(user_message, WORKOUT_SYSTEM_PROMPT, "Workout extraction")
+        raw = ai_client.call_ai(user_message, WORKOUT_SYSTEM_PROMPT, "Workout extraction", temperature=0)
         raw = raw.strip()
         if raw.startswith("```"):
             raw = "\n".join(raw.split("\n")[1:])
@@ -241,7 +241,7 @@ def extract_tasks(groq_client, transcripts: List[dict], recording_date: date) ->
     log.info("Extracting tasks...")
 
     try:
-        raw = ai_client.call_ai(user_message, TASK_SYSTEM_PROMPT, "Task extraction")
+        raw = ai_client.call_ai(user_message, TASK_SYSTEM_PROMPT, "Task extraction", temperature=0)
         raw = raw.strip()
         if raw.startswith("```"):
             raw = "\n".join(raw.split("\n")[1:])
@@ -286,7 +286,7 @@ def extract_calendar_events(groq_client, transcripts: List[dict], recording_date
     log.info("Extracting calendar events...")
 
     try:
-        raw = ai_client.call_ai(user_message, CALENDAR_SYSTEM_PROMPT, "Calendar extraction")
+        raw = ai_client.call_ai(user_message, CALENDAR_SYSTEM_PROMPT, "Calendar extraction", temperature=0)
         raw = raw.strip()
         if raw.startswith("```"):
             raw = "\n".join(raw.split("\n")[1:])
@@ -365,7 +365,7 @@ def extract_bodyweight(groq_client, transcripts: List[dict], recording_date: dat
     )
 
     try:
-        raw = ai_client.call_ai(user_message, BODYWEIGHT_SYSTEM_PROMPT, "Bodyweight extraction")
+        raw = ai_client.call_ai(user_message, BODYWEIGHT_SYSTEM_PROMPT, "Bodyweight extraction", temperature=0)
         raw = raw.strip()
         if raw.startswith("```"):
             raw = "\n".join(raw.split("\n")[1:])
