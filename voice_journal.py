@@ -68,6 +68,7 @@ from pipeline.storage import (
     mark_written,
     save_markdown,
 )
+from pipeline.lock import pipeline_lock, PipelineLocked
 
 LOG_FILE = Path(__file__).parent / "voice_journal.log"
 
@@ -126,6 +127,14 @@ def run_upload_mode():
     Any write step that fails leaves its pending_writes entry un-marked so the
     overnight pass will retry it.
     """
+    try:
+        with pipeline_lock(BUFFER_DIR):
+            _run_upload_locked()
+    except PipelineLocked:
+        log.info("Pipeline busy — another upload is in progress; file stays in inbox for next trigger")
+
+
+def _run_upload_locked():
     recording_date = date.today()
 
     INBOX_DIR.mkdir(parents=True, exist_ok=True)
@@ -149,15 +158,26 @@ def run_upload_mode():
 
     log.info(f"Successfully transcribed {len(successful)}/{len(transcripts)} memos")
 
-    # Extract structured data from this batch before any DB write
-    workout    = extract_workout(groq_client, successful, recording_date)
-    tasks      = extract_tasks(groq_client, successful, recording_date)
-    cal_events = extract_calendar_events(groq_client, successful, recording_date)
-    bodyweight = extract_bodyweight(groq_client, successful, recording_date)
+    # Skip memos whose Whisper output was entirely removed by the hallucination filter.
+    non_empty = [t for t in successful if t.get("text", "").strip()]
+    for t in successful:
+        if not t.get("text", "").strip():
+            log.warning(f"Memo {t.get('file')!r} produced an empty filtered transcript — skipping extraction, audio archived")
 
-    # Buffer transcripts + extracted data — data is safe from here on
+    if not non_empty:
+        log.warning("All transcripts are empty after filtering — archiving audio, nothing to extract.")
+        archive_files(files, recording_date, transcripts=successful)
+        return
+
+    # Extract structured data from this batch before any DB write
+    workout    = extract_workout(groq_client, non_empty, recording_date)
+    tasks      = extract_tasks(groq_client, non_empty, recording_date)
+    cal_events = extract_calendar_events(groq_client, non_empty, recording_date)
+    bodyweight = extract_bodyweight(groq_client, non_empty, recording_date)
+
+    # Buffer non-empty transcripts + extracted data — data is safe from here on
     batch_id = append_to_buffer(
-        successful,
+        non_empty,
         recording_date,
         extracted={"workout": workout, "tasks": tasks, "events": cal_events, "bodyweight": bodyweight},
     )
@@ -207,7 +227,7 @@ def run_upload_mode():
     task_info = f" · {tasks_created}/{len(tasks)} tasks" if tasks else ""
     cal_info  = f" · {cal_created}/{len(cal_events)} events → GCal" if cal_events else ""
     log.info("=" * 60)
-    log.info(f"Upload done. {len(successful)} memo(s) buffered{wk_info}{task_info}{cal_info}")
+    log.info(f"Upload done. {len(non_empty)} memo(s) buffered{wk_info}{task_info}{cal_info}")
     log.info("=" * 60)
 
 
@@ -225,6 +245,14 @@ def run_overnight_mode():
 
     Falls back to inbox files if no buffer exists (legacy behaviour / manual runs).
     """
+    try:
+        with pipeline_lock(BUFFER_DIR):
+            _run_overnight_locked()
+    except PipelineLocked:
+        log.info("Pipeline busy — overnight run skipped (manual retry: --mode overnight)")
+
+
+def _run_overnight_locked():
     recording_date = date.today() - timedelta(days=1)
 
     INBOX_DIR.mkdir(parents=True, exist_ok=True)
