@@ -154,7 +154,7 @@ def append_to_buffer(
 def mark_written(d: date, batch_id: str, resource: str):
     """Mark a specific resource as written for a pending buffer entry.
 
-    resource must be one of: 'workout', 'tasks', 'events'.
+    resource must be one of: 'workout', 'tasks', 'events', 'bodyweight'.
     No-op if batch_id not found or buffer file doesn't exist.
     """
     path = get_buffer_path(d)
