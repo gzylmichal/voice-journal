@@ -14,28 +14,24 @@ Usage:
 
 import json
 import logging
-import os
 import time
-from pathlib import Path
-
-from dotenv import load_dotenv
 
 try:
     import requests
 except ImportError:
     raise ImportError("Missing dependency: pip install requests --break-system-packages")
 
-load_dotenv(Path(__file__).parent / ".env")
+from pipeline.config import (
+    AI_PROVIDER,
+    ANTHROPIC_API_KEY,
+    CLAUDE_MODEL,
+    GEMINI_MODEL,
+    GOOGLE_API_KEY,
+    GROQ_API_KEY,
+    LLAMA_MODEL,
+)
 
 log = logging.getLogger(__name__)
-
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-GOOGLE_API_KEY    = os.getenv("GOOGLE_API_KEY", "")
-GROQ_API_KEY      = os.getenv("GROQ_API_KEY", "")
-CLAUDE_MODEL      = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
-GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-LLAMA_MODEL       = os.getenv("LLAMA_MODEL", "llama-3.3-70b-versatile")
-AI_PROVIDER       = os.getenv("AI_PROVIDER", "auto")
 
 _TRANSIENT     = {429, 500, 503}
 _MAX_RETRIES   = 3
