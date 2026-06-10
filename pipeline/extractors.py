@@ -87,6 +87,9 @@ MUSCLE_GROUP_RULES = [
     ("core",          "Core"),
 ]
 
+# Longer keywords must match before shorter ones (e.g. "leg curl" before "curl").
+MUSCLE_GROUP_RULES = sorted(MUSCLE_GROUP_RULES, key=lambda r: len(r[0]), reverse=True)
+
 
 def infer_muscle_group(exercise_name: str) -> str:
     """Return the primary muscle group for a given exercise name."""
