@@ -2,7 +2,7 @@
 """ai_client.py — Single AI provider dispatch for the Voice Journal pipeline.
 
 Supports Claude (Anthropic), Gemini (Google), and Groq (Llama) with a
-configurable provider chain. Transient errors (429/500/503) on Gemini are
+configurable provider chain. Transient errors (429/500/503) on any provider are
 retried up to 3 times with 10 s back-off. If the primary provider fails,
 Groq is used as a fallback (when a GROQ_API_KEY is available).
 
@@ -15,6 +15,7 @@ Usage:
 import json
 import logging
 import time
+from typing import Callable
 
 try:
     import requests
@@ -38,8 +39,44 @@ _MAX_RETRIES   = 3
 _RETRY_DELAY_S = 10
 
 
+class _Transient(RuntimeError):
+    """Raised by provider implementations to signal a retryable HTTP status."""
+
+
 # ---------------------------------------------------------------------------
-# Provider implementations
+# Retry wrapper
+# ---------------------------------------------------------------------------
+
+def _with_retries(label: str, fn: Callable[[], str]) -> str:
+    """Call fn up to _MAX_RETRIES times; retry on _Transient or network errors."""
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return fn()
+        except _Transient as exc:
+            if attempt < _MAX_RETRIES:
+                log.warning(
+                    f"{label}: {exc} (attempt {attempt}/{_MAX_RETRIES})"
+                    f" — retrying in {_RETRY_DELAY_S}s"
+                )
+                time.sleep(_RETRY_DELAY_S)
+            else:
+                raise RuntimeError(f"{label}: {exc}") from exc
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            if attempt < _MAX_RETRIES:
+                log.warning(
+                    f"{label}: network error (attempt {attempt}/{_MAX_RETRIES}): {exc}"
+                    f" — retrying in {_RETRY_DELAY_S}s"
+                )
+                time.sleep(_RETRY_DELAY_S)
+            else:
+                raise RuntimeError(f"{label}: {exc}") from exc
+    raise RuntimeError(f"{label}: all retries exhausted")
+
+
+# ---------------------------------------------------------------------------
+# Provider implementations (single attempt each)
 # ---------------------------------------------------------------------------
 
 def _call_claude(
@@ -64,6 +101,8 @@ def _call_claude(
         },
         timeout=60,
     )
+    if resp.status_code in _TRANSIENT:
+        raise _Transient(f"Claude API {resp.status_code}")
     if resp.status_code != 200:
         raise RuntimeError(f"Claude API {resp.status_code}: {resp.text[:500]}")
     return "\n".join(
@@ -88,42 +127,23 @@ def _call_gemini(
         "contents": [{"role": "user", "parts": [{"text": user_message}]}],
         "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
     }
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            resp = requests.post(
-                url,
-                headers={"content-type": "application/json"},
-                json=payload,
-                timeout=60,
-            )
-            if resp.status_code in _TRANSIENT and attempt < _MAX_RETRIES:
-                log.warning(
-                    f"Gemini {resp.status_code} (attempt {attempt}/{_MAX_RETRIES})"
-                    f" — retrying in {_RETRY_DELAY_S}s"
-                )
-                time.sleep(_RETRY_DELAY_S)
-                continue
-            if resp.status_code != 200:
-                raise RuntimeError(f"Gemini API {resp.status_code}: {resp.text[:500]}")
-            candidates = resp.json().get("candidates", [])
-            if not candidates:
-                raise RuntimeError(
-                    f"Gemini returned no candidates: {json.dumps(resp.json())[:500]}"
-                )
-            parts = candidates[0].get("content", {}).get("parts", [])
-            return "\n".join(p.get("text", "") for p in parts).strip()
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            if attempt < _MAX_RETRIES:
-                log.warning(
-                    f"Gemini network error (attempt {attempt}/{_MAX_RETRIES}): {exc}"
-                    f" — retrying in {_RETRY_DELAY_S}s"
-                )
-                time.sleep(_RETRY_DELAY_S)
-            else:
-                raise RuntimeError(f"Gemini: {exc}") from exc
-    raise RuntimeError("Gemini: all retries exhausted")
+    resp = requests.post(
+        url,
+        headers={"content-type": "application/json"},
+        json=payload,
+        timeout=60,
+    )
+    if resp.status_code in _TRANSIENT:
+        raise _Transient(f"Gemini API {resp.status_code}")
+    if resp.status_code != 200:
+        raise RuntimeError(f"Gemini API {resp.status_code}: {resp.text[:500]}")
+    candidates = resp.json().get("candidates", [])
+    if not candidates:
+        raise RuntimeError(
+            f"Gemini returned no candidates: {json.dumps(resp.json())[:500]}"
+        )
+    parts = candidates[0].get("content", {}).get("parts", [])
+    return "\n".join(p.get("text", "") for p in parts).strip()
 
 
 def _call_groq(
@@ -136,17 +156,23 @@ def _call_groq(
         from groq import Groq
     except ImportError:
         raise RuntimeError("Groq not installed: pip install groq --break-system-packages")
-    client = Groq(api_key=GROQ_API_KEY)
-    response = client.chat.completions.create(
-        model=LLAMA_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    return response.choices[0].message.content.strip()
+    try:
+        client = Groq(api_key=GROQ_API_KEY)
+        response = client.chat.completions.create(
+            model=LLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as exc:
+        code = getattr(exc, "status_code", None)
+        if code in _TRANSIENT:
+            raise _Transient(f"Groq API {code}") from exc
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -197,11 +223,12 @@ def call_ai(
         try:
             log.info(f"{label}: calling {provider.upper()}...")
             if provider == "claude":
-                return _call_claude(user_message, system_prompt, max_tokens, temperature)
+                fn = lambda: _call_claude(user_message, system_prompt, max_tokens, temperature)  # noqa: E731
             elif provider == "gemini":
-                return _call_gemini(user_message, system_prompt, max_tokens, temperature)
+                fn = lambda: _call_gemini(user_message, system_prompt, max_tokens, temperature)  # noqa: E731
             else:
-                return _call_groq(user_message, system_prompt, max_tokens, temperature)
+                fn = lambda: _call_groq(user_message, system_prompt, max_tokens, temperature)  # noqa: E731
+            return _with_retries(f"{label}/{provider.upper()}", fn)
         except Exception as exc:
             log.error(f"{label}: {provider.upper()} failed: {exc}")
             if provider != chain[-1]:
