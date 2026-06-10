@@ -14,7 +14,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 # Groq — required (Whisper transcription)
 # ---------------------------------------------------------------------------
 GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
-WHISPER_MODEL = "whisper-large-v3-turbo"
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-large-v3-turbo")
 TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "auto")
 LLAMA_MODEL   = os.getenv("LLAMA_MODEL", "llama-3.3-70b-versatile")
 
