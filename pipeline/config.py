@@ -88,3 +88,9 @@ WHISPER_PROMPT = os.getenv("WHISPER_PROMPT", (
 WHISPER_NO_SPEECH_PROB_THRESHOLD = float(os.getenv("WHISPER_NO_SPEECH_PROB_THRESHOLD", "0.6"))
 WHISPER_AVG_LOGPROB_THRESHOLD = float(os.getenv("WHISPER_AVG_LOGPROB_THRESHOLD", "-1.0"))
 WHISPER_COMPRESSION_RATIO_THRESHOLD = float(os.getenv("WHISPER_COMPRESSION_RATIO_THRESHOLD", "2.4"))
+
+# ---------------------------------------------------------------------------
+# Notifications — ntfy.sh push alerts (optional)
+# ---------------------------------------------------------------------------
+NTFY_TOPIC  = os.getenv("NTFY_TOPIC", "")   # empty = disabled
+NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
