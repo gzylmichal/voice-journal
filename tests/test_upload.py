@@ -95,6 +95,8 @@ def test_mixed_only_nonempty_buffered(tmp_path):
     def fake_transcribe(client, f):
         return _empty_transcript(f.name) if f.name == "a.m4a" else _good_transcript(f.name)
 
+    mock_extracted = {"workout": {"detected": False}, "tasks": [], "events": [], "bodyweight": {"detected": False}}
+
     with patch("voice_journal.BUFFER_DIR", tmp_path), \
          patch("voice_journal.INBOX_DIR", tmp_path / "inbox"), \
          patch("voice_journal.ARCHIVE_AUDIO_DIR", tmp_path / "archive" / "audio"), \
@@ -104,17 +106,14 @@ def test_mixed_only_nonempty_buffered(tmp_path):
          patch("voice_journal.GROQ_API_KEY", "test"), \
          patch("voice_journal.append_to_buffer") as mock_buf, \
          patch("voice_journal.archive_files") as mock_arc, \
-         patch("voice_journal.extract_workout", return_value={"detected": False}) as mock_wk, \
-         patch("voice_journal.extract_tasks", return_value=[]), \
-         patch("voice_journal.extract_calendar_events", return_value=[]), \
-         patch("voice_journal.extract_bodyweight", return_value={"detected": False}), \
+         patch("voice_journal.extract_all", return_value=mock_extracted) as mock_ea, \
          patch("voice_journal.fetch_latest_bodyweight", return_value=None):
         voice_journal.run_upload_mode()
 
-    # extract was called with only the non-empty transcript
-    wk_call_transcripts = mock_wk.call_args[0][1]
-    assert len(wk_call_transcripts) == 1
-    assert wk_call_transcripts[0]["file"] == "b.m4a"
+    # extract_all was called with only the non-empty transcript
+    ea_call_transcripts = mock_ea.call_args[0][0]
+    assert len(ea_call_transcripts) == 1
+    assert ea_call_transcripts[0]["file"] == "b.m4a"
 
     # buffer received only the non-empty transcript
     buf_call_transcripts = mock_buf.call_args[0][0]

@@ -44,6 +44,7 @@ from pipeline.config import (
 from pipeline.audio import get_inbox_files, transcribe_file
 from pipeline.journal import format_journal_entry
 from pipeline.extractors import (
+    extract_all,
     extract_bodyweight,
     extract_calendar_events,
     extract_tasks,
@@ -169,11 +170,12 @@ def _run_upload_locked():
         archive_files(files, recording_date, transcripts=successful)
         return
 
-    # Extract structured data from this batch before any DB write
-    workout    = extract_workout(groq_client, non_empty, recording_date)
-    tasks      = extract_tasks(groq_client, non_empty, recording_date)
-    cal_events = extract_calendar_events(groq_client, non_empty, recording_date)
-    bodyweight = extract_bodyweight(groq_client, non_empty, recording_date)
+    # Extract structured data from this batch — single LLM call for all four categories
+    extracted  = extract_all(non_empty, recording_date)
+    workout    = extracted["workout"]
+    tasks      = extracted["tasks"] if NOTION_ENABLED else []
+    cal_events = extracted["events"] if GCAL_ENABLED else []
+    bodyweight = extracted["bodyweight"]
 
     # Buffer non-empty transcripts + extracted data — data is safe from here on
     batch_id = append_to_buffer(

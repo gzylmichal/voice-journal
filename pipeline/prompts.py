@@ -132,6 +132,82 @@ Use kg. If stated in lbs, convert (1 lb = 0.453592 kg, round to 1 decimal).
 Output ONLY valid JSON. No markdown, no commentary."""
 
 
+EXTRACTION_SYSTEM_PROMPT = """You extract structured data from voice memo transcripts in a single pass.
+
+The speaker records memos in English, Polish, or a mix of both — this is intentional.
+Recording date is provided in the user message.
+
+Return a single JSON object with exactly four keys: "workout", "tasks", "events", "bodyweight".
+
+## workout
+Extract workout data. Return an object with:
+- "detected": true if any workout/exercise content found, false otherwise
+- "workout_name": short label e.g. "Push day", "Leg day", "Upper body" — infer from exercises, or use "Workout"
+- "exercises": array of objects, each with:
+  - "name": exercise name, cleaned up and capitalised (e.g. "Smith machine bench press")
+  - "sets": total number of sets as an integer, or null if unclear
+  - "sets_detail": array of per-set objects — each has "reps" (int or null) and "weight" (string or null, e.g. "60 kg", "bodyweight", "+24 kg")
+    - If all sets identical you may use a single object; if they vary, list each set separately
+    - Preserve actual weights and reps spoken — do NOT average or discard variation
+  - "is_bodyweight": true if exercise primarily uses the athlete's own bodyweight (pull-ups, chin-ups, dips, push-ups, bodyweight squats, etc.)
+  - "added_weight_kg": float if extra load added to a bodyweight exercise, null otherwise
+
+Workout rules:
+- Merge multiple memos describing the same exercise into one entry
+- Preserve progression data exactly (e.g. 60x12, 70x8, 85x3 → three separate set objects)
+- Do NOT invent data not present in transcripts
+- If no workout detected: {"detected": false, "workout_name": null, "exercises": []}
+
+## tasks
+Extract action items and tasks. Return a JSON array of task objects, each with:
+- "title": short, clear task name in the same language the speaker used
+- "description": one sentence of context, or null
+- "due_date": ISO date YYYY-MM-DD if a deadline or timeframe is mentioned, or null
+- "priority": always "Normal"
+- "type": one of: Assignment, Exam, Errand, Work, Admin, Personal, Home
+  (Errand: physical tasks outside home; Home: household tasks; Admin: paperwork/bureaucracy;
+   Work: professional tasks; Personal: self-improvement/health/hobbies; Assignment: study tasks)
+
+Do NOT extract: things already done, vague wishes without clear intent, workout exercises, calendar appointments.
+If no tasks found: []
+
+## events
+Extract calendar events. Return a JSON array of event objects, each with:
+- "title": short event name — what the appointment IS (not the meta-request to schedule it)
+- "date": ISO date YYYY-MM-DD (resolve relative dates using the recording date provided)
+- "time": 24h time string HH:MM, or null if not specified
+- "duration_minutes": integer, or null if not specified (do not default — leave null)
+- "notes": extra context, or null
+
+Do NOT extract: past events, vague intentions without a specific date/time, recurring habits.
+If no events found: []
+
+## bodyweight
+Extract the speaker's personal body weight measurement. Return:
+- {"detected": true, "weight_kg": <float>} if the speaker explicitly states their own body weight
+- {"detected": false} otherwise
+
+Positive examples:
+"I weigh 82 kilos tonight" → {"detected": true, "weight_kg": 82.0}
+"My weight this evening is 81.5" → {"detected": true, "weight_kg": 81.5}
+"Ważę dzisiaj 82 i pół" → {"detected": true, "weight_kg": 82.5}
+"Zważyłem się rano, 84 kilo" → {"detected": true, "weight_kg": 84.0}
+"Scale says 80.2 this morning" → {"detected": true, "weight_kg": 80.2}
+
+Negative examples — ALWAYS return {"detected": false} for these:
+"Wyciskanie 80 kilo, 8 powtórzeń" → {"detected": false}
+"Bench press 3 sets: 70 kg x 12, 80 kg x 8, 90 kg x 5" → {"detected": false}
+
+## Cross-cutting rule
+Each number belongs to exactly one category. A weight spoken in an exercise context (bench press,
+squat, deadlift, dumbbell, "x reps", sets, series, powtórzenia, serie) is NEVER the speaker's
+bodyweight. When in doubt, classify a number as an exercise weight, not bodyweight.
+
+Output ONLY valid JSON in this exact shape:
+{"workout": {...}, "tasks": [...], "events": [...], "bodyweight": {...}}
+No preamble, no markdown fences, no commentary."""
+
+
 TASK_SYSTEM_PROMPT = """You extract action items and tasks from voice memo transcripts.
 
 The speaker records memos in English, Polish, or a mix of both — this is intentional.

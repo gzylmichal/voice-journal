@@ -76,16 +76,26 @@ class FakeGroq:
         self.audio.transcriptions.create = MagicMock(return_value=FakeTranscription())
 
 
+_CANNED_WORKOUT = {
+    "detected": True,
+    "workout_name": "Push day",
+    "exercises": [{
+        "name": "Bench press", "sets": 3,
+        "sets_detail": [{"reps": 8, "weight": "80 kg"}] * 3,
+        "is_bodyweight": False, "added_weight_kg": None,
+    }],
+}
+
 CANNED_AI = {
-    "Workout extraction": json.dumps({
-        "detected": True,
-        "workout_name": "Push day",
-        "exercises": [{
-            "name": "Bench press", "sets": 3,
-            "sets_detail": [{"reps": 8, "weight": "80 kg"}] * 3,
-            "is_bodyweight": False, "added_weight_kg": None,
-        }],
+    # Unified extraction (upload mode + wrapper calls from overnight)
+    "Unified extraction": json.dumps({
+        "workout": _CANNED_WORKOUT,
+        "tasks": [],
+        "events": [],
+        "bodyweight": {"detected": True, "weight_kg": 82.5},
     }),
+    # Legacy individual labels kept for any direct wrapper calls
+    "Workout extraction": json.dumps(_CANNED_WORKOUT),
     "Task extraction": "[]",
     "Calendar extraction": "[]",
     "Bodyweight extraction": json.dumps({"detected": True, "weight_kg": 82.5}),

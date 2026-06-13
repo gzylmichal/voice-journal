@@ -124,7 +124,8 @@ def test_workout_prompt_has_bodyweight_fields():
 # ---------------------------------------------------------------------------
 
 def test_extract_bodyweight_detected():
-    with patch("ai_client.call_ai", return_value='{"detected": true, "weight_kg": 82.5}'):
+    _unified = '{"workout": {"detected": false, "exercises": []}, "tasks": [], "events": [], "bodyweight": {"detected": true, "weight_kg": 82.5}}'
+    with patch("ai_client.call_ai", return_value=_unified):
         from pipeline.extractors import extract_bodyweight
         transcripts = [{"time": "18:00", "text": "I weigh 82.5 kilos tonight"}]
         result = extract_bodyweight(None, transcripts, date(2026, 5, 20))
@@ -302,7 +303,8 @@ def test_pre_filter_workout_only_skips_llm():
 
 def test_pre_filter_weigh_in_phrase_calls_llm():
     """Transcript with 'i weigh' → LLM IS called."""
-    with patch("ai_client.call_ai", return_value='{"detected": true, "weight_kg": 82.0}') as mock_ai:
+    _unified = '{"workout": {"detected": false, "exercises": []}, "tasks": [], "events": [], "bodyweight": {"detected": true, "weight_kg": 82.0}}'
+    with patch("ai_client.call_ai", return_value=_unified) as mock_ai:
         from pipeline.extractors import extract_bodyweight
         transcripts = [{"time": "18:00", "text": "I weigh 82 kilos today"}]
         result = extract_bodyweight(None, transcripts, date(2026, 5, 20))
@@ -312,7 +314,8 @@ def test_pre_filter_weigh_in_phrase_calls_llm():
 
 def test_pre_filter_polish_phrase_calls_llm():
     """Polish weigh-in phrase → LLM IS called."""
-    with patch("ai_client.call_ai", return_value='{"detected": true, "weight_kg": 84.0}') as mock_ai:
+    _unified = '{"workout": {"detected": false, "exercises": []}, "tasks": [], "events": [], "bodyweight": {"detected": true, "weight_kg": 84.0}}'
+    with patch("ai_client.call_ai", return_value=_unified) as mock_ai:
         from pipeline.extractors import extract_bodyweight
         transcripts = [{"time": "07:00", "text": "Zważyłem się rano, 84 kilo"}]
         result = extract_bodyweight(None, transcripts, date(2026, 5, 20))

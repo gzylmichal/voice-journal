@@ -8,7 +8,13 @@ from typing import List, Optional, Tuple
 
 import ai_client
 from pipeline.config import GCAL_ENABLED, NOTION_ENABLED
-from pipeline.prompts import BODYWEIGHT_SYSTEM_PROMPT, CALENDAR_SYSTEM_PROMPT, TASK_SYSTEM_PROMPT, WORKOUT_SYSTEM_PROMPT
+from pipeline.prompts import (
+    BODYWEIGHT_SYSTEM_PROMPT,
+    CALENDAR_SYSTEM_PROMPT,
+    EXTRACTION_SYSTEM_PROMPT,
+    TASK_SYSTEM_PROMPT,
+    WORKOUT_SYSTEM_PROMPT,
+)
 
 _BODYWEIGHT_MIN_KG = 40.0
 _BODYWEIGHT_MAX_KG = 250.0
@@ -89,6 +95,90 @@ MUSCLE_GROUP_RULES = [
 
 # Longer keywords must match before shorter ones (e.g. "leg curl" before "curl").
 MUSCLE_GROUP_RULES = sorted(MUSCLE_GROUP_RULES, key=lambda r: len(r[0]), reverse=True)
+
+
+def _parse_json_response(raw: str):
+    """Strip markdown fences and parse JSON. Raises json.JSONDecodeError on failure."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = "\n".join(raw.split("\n")[1:])
+    if raw.endswith("```"):
+        raw = "\n".join(raw.split("\n")[:-1])
+    return json.loads(raw.strip())
+
+
+def _empty_extraction() -> dict:
+    return {
+        "workout": {"detected": False, "exercises": []},
+        "tasks": [],
+        "events": [],
+        "bodyweight": {"detected": False},
+    }
+
+
+def extract_all(transcripts: List[dict], recording_date: date) -> dict:
+    """Single LLM call extracting workout, tasks, events, and bodyweight."""
+    combined_text = "\n\n".join(
+        f"[{t['time']}] {t['text']}"
+        for t in transcripts if not t.get("error")
+    )
+    if not combined_text.strip():
+        return _empty_extraction()
+
+    has_weigh_in = any(phrase in combined_text.lower() for phrase in BODYWEIGHT_WEIGH_IN_PHRASES)
+
+    user_message = (
+        f"Recording date: {recording_date.strftime('%A, %B %d, %Y')} "
+        f"({recording_date.isoformat()})\n\n"
+        f"{combined_text}"
+    )
+
+    log.info("Running unified extraction (workout + tasks + events + bodyweight)...")
+
+    try:
+        raw = ai_client.call_ai(
+            user_message, EXTRACTION_SYSTEM_PROMPT, "Unified extraction", temperature=0
+        )
+        result = _parse_json_response(raw)
+
+        if not isinstance(result, dict):
+            log.error("Unified extraction: response is not a dict")
+            return _empty_extraction()
+
+        workout = result.get("workout") or {"detected": False, "exercises": []}
+        tasks = result.get("tasks") or []
+        events = result.get("events") or []
+        bodyweight = result.get("bodyweight") or {"detected": False}
+
+        if not isinstance(tasks, list):
+            tasks = []
+        if not isinstance(events, list):
+            events = []
+        if not isinstance(bodyweight, dict):
+            bodyweight = {"detected": False}
+
+        # A1 bodyweight keyword pre-filter applied post-hoc
+        if not has_weigh_in:
+            log.info("Bodyweight: no weigh-in phrase found — forcing detected: false")
+            bodyweight = {"detected": False}
+        elif bodyweight.get("detected"):
+            log.info(f"Bodyweight detected: {bodyweight.get('weight_kg')} kg")
+
+        if workout.get("detected"):
+            log.info(f"Workout: {workout.get('workout_name')} — {len(workout.get('exercises', []))} exercise(s)")
+        if tasks:
+            log.info(f"Tasks: {len(tasks)} found")
+        if events:
+            log.info(f"Events: {len(events)} found")
+
+        return {"workout": workout, "tasks": tasks, "events": events, "bodyweight": bodyweight}
+
+    except json.JSONDecodeError as e:
+        log.error(f"Unified extraction: JSON parse failed: {e}")
+        return _empty_extraction()
+    except Exception as e:
+        log.error(f"Unified extraction failed: {e}")
+        return _empty_extraction()
 
 
 def infer_muscle_group(exercise_name: str) -> str:
@@ -178,136 +268,22 @@ def format_workout_table(workout: dict, recording_date: date) -> str:
 
 
 def extract_workout(groq_client, transcripts: List[dict], recording_date: date) -> dict:
-    """
-    Run a dedicated AI pass to detect and extract workout data.
-    Returns workout dict, or {"detected": False} on no content or error.
-    """
-    combined_text = "\n\n".join(
-        f"[{t['time']}] {t['text']}"
-        for t in transcripts if not t.get("error")
-    )
-    user_message = (
-        f"Recording date: {recording_date.strftime('%A, %B %d, %Y')}\n\n"
-        f"{combined_text}"
-    )
-
-    log.info("Extracting workout data...")
-
-    try:
-        raw = ai_client.call_ai(user_message, WORKOUT_SYSTEM_PROMPT, "Workout extraction", temperature=0)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = "\n".join(raw.split("\n")[1:])
-        if raw.endswith("```"):
-            raw = "\n".join(raw.split("\n")[:-1])
-        raw = raw.strip()
-
-        workout = json.loads(raw)
-
-        if workout.get("detected"):
-            count = len(workout.get("exercises", []))
-            log.info(f"Workout detected: {workout.get('workout_name')} — {count} exercise(s)")
-        else:
-            log.info("No workout detected in today's memos")
-
-        return workout
-
-    except json.JSONDecodeError as e:
-        log.error(f"Workout extraction: JSON parse failed: {e}")
-        return {"detected": False, "exercises": []}
-    except Exception as e:
-        log.error(f"Workout extraction failed: {e}")
-        return {"detected": False, "exercises": []}
+    """Thin wrapper: returns the workout key from extract_all."""
+    return extract_all(transcripts, recording_date)["workout"]
 
 
 def extract_tasks(groq_client, transcripts: List[dict], recording_date: date) -> List[dict]:
-    """
-    Run a dedicated AI pass to extract action items from transcripts.
-    Returns list of task dicts, empty if none found or on error.
-    """
+    """Thin wrapper: returns the tasks key from extract_all."""
     if not NOTION_ENABLED:
         return []
-
-    combined_text = "\n\n".join(
-        f"[{t['time']}] {t['text']}"
-        for t in transcripts if not t.get("error")
-    )
-    user_message = (
-        f"Recording date: {recording_date.strftime('%A, %B %d, %Y')} "
-        f"({recording_date.isoformat()})\n\n"
-        f"{combined_text}"
-    )
-
-    log.info("Extracting tasks...")
-
-    try:
-        raw = ai_client.call_ai(user_message, TASK_SYSTEM_PROMPT, "Task extraction", temperature=0)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = "\n".join(raw.split("\n")[1:])
-        if raw.endswith("```"):
-            raw = "\n".join(raw.split("\n")[:-1])
-        raw = raw.strip()
-
-        tasks = json.loads(raw)
-        if not isinstance(tasks, list):
-            log.warning("Task extraction returned non-list JSON, skipping")
-            return []
-
-        log.info(f"Found {len(tasks)} task(s)")
-        return tasks
-
-    except json.JSONDecodeError as e:
-        log.error(f"Task extraction: JSON parse failed: {e}")
-        return []
-    except Exception as e:
-        log.error(f"Task extraction failed: {e}")
-        return []
+    return extract_all(transcripts, recording_date)["tasks"]
 
 
 def extract_calendar_events(groq_client, transcripts: List[dict], recording_date: date) -> List[dict]:
-    """
-    Run a second AI pass to extract calendar events from transcripts.
-    Returns a list of event dicts, empty if none found or extraction fails.
-    """
+    """Thin wrapper: returns the events key from extract_all."""
     if not GCAL_ENABLED:
         return []
-
-    combined_text = "\n\n".join(
-        f"[{t['time']}] {t['text']}"
-        for t in transcripts if not t.get("error")
-    )
-    user_message = (
-        f"Reference date (when these memos were recorded): "
-        f"{recording_date.strftime('%A, %B %d, %Y')} ({recording_date.isoformat()})\n\n"
-        f"{combined_text}"
-    )
-
-    log.info("Extracting calendar events...")
-
-    try:
-        raw = ai_client.call_ai(user_message, CALENDAR_SYSTEM_PROMPT, "Calendar extraction", temperature=0)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = "\n".join(raw.split("\n")[1:])
-        if raw.endswith("```"):
-            raw = "\n".join(raw.split("\n")[:-1])
-        raw = raw.strip()
-
-        events = json.loads(raw)
-        if not isinstance(events, list):
-            log.warning("Calendar extraction returned non-list JSON, skipping")
-            return []
-
-        log.info(f"Found {len(events)} calendar event(s)")
-        return events
-
-    except json.JSONDecodeError as e:
-        log.error(f"Calendar extraction: JSON parse failed: {e}")
-        return []
-    except Exception as e:
-        log.error(f"Calendar extraction failed: {e}")
-        return []
+    return extract_all(transcripts, recording_date)["events"]
 
 
 def validate_bodyweight(weight_kg: float, recording_date: date) -> bool:
@@ -346,42 +322,16 @@ def validate_bodyweight(weight_kg: float, recording_date: date) -> bool:
 
 
 def extract_bodyweight(groq_client, transcripts: List[dict], recording_date: date) -> dict:
-    """Extract bodyweight measurement from transcripts. Returns {"detected": True/False, "weight_kg": float}."""
+    """Thin wrapper: returns the bodyweight key from extract_all.
+    Pre-filter preserved: skip the LLM entirely if no weigh-in phrase found.
+    """
     combined_text = "\n\n".join(
         f"[{t['time']}] {t['text']}"
         for t in transcripts if not t.get("error")
     )
     if not combined_text.strip():
         return {"detected": False}
-
-    text_lower = combined_text.lower()
-    if not any(phrase in text_lower for phrase in BODYWEIGHT_WEIGH_IN_PHRASES):
+    if not any(phrase in combined_text.lower() for phrase in BODYWEIGHT_WEIGH_IN_PHRASES):
         log.info("Bodyweight: no weigh-in phrase found — skipping LLM call")
         return {"detected": False}
-
-    user_message = (
-        f"Recording date: {recording_date.strftime('%A, %B %d, %Y')}\n\n"
-        f"{combined_text}"
-    )
-
-    try:
-        raw = ai_client.call_ai(user_message, BODYWEIGHT_SYSTEM_PROMPT, "Bodyweight extraction", temperature=0)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = "\n".join(raw.split("\n")[1:])
-        if raw.endswith("```"):
-            raw = "\n".join(raw.split("\n")[:-1])
-        raw = raw.strip()
-
-        data = json.loads(raw)
-        if data.get("detected") and isinstance(data.get("weight_kg"), (int, float)):
-            log.info(f"Bodyweight detected: {data['weight_kg']:.1f} kg")
-            return {"detected": True, "weight_kg": float(data["weight_kg"])}
-        return {"detected": False}
-
-    except json.JSONDecodeError as e:
-        log.error(f"Bodyweight extraction: JSON parse failed: {e}")
-        return {"detected": False}
-    except Exception as e:
-        log.error(f"Bodyweight extraction failed: {e}")
-        return {"detected": False}
+    return extract_all(transcripts, recording_date)["bodyweight"]
