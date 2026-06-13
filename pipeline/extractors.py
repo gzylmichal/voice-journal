@@ -267,6 +267,54 @@ def format_workout_table(workout: dict, recording_date: date) -> str:
     return "\n".join(lines) + "\n"
 
 
+def merge_buffered_workouts(pending_writes: list) -> dict:
+    """Merge workout dicts from buffer entries into one, combining exercise sets in order.
+
+    Same exercise name in multiple batches → single entry with all sets appended.
+    No buffer or no detected workouts → {"detected": False}.
+    Pure function: no network, no LLM, no file I/O.
+    """
+    detected = [
+        entry["workout"]
+        for entry in (pending_writes or [])
+        if isinstance(entry.get("workout"), dict) and entry["workout"].get("detected")
+    ]
+
+    if not detected:
+        return {"detected": False}
+
+    workout_name = next(
+        (w.get("workout_name") for w in detected if w.get("workout_name")),
+        "Workout",
+    )
+
+    exercises_by_name: dict = {}
+    exercise_order: list = []
+
+    for workout in detected:
+        for ex in workout.get("exercises") or []:
+            name = ex.get("name") or ""
+            key = name.lower()
+            if key not in exercises_by_name:
+                exercises_by_name[key] = {
+                    "name": name,
+                    "sets": 0,
+                    "sets_detail": [],
+                    "weight": ex.get("weight") or "—",
+                }
+                exercise_order.append(key)
+            merged = exercises_by_name[key]
+            new_detail = ex.get("sets_detail") or []
+            merged["sets_detail"].extend(new_detail)
+            merged["sets"] += len(new_detail) if new_detail else (ex.get("sets") or 0)
+
+    return {
+        "detected": True,
+        "workout_name": workout_name,
+        "exercises": [exercises_by_name[k] for k in exercise_order],
+    }
+
+
 def extract_workout(groq_client, transcripts: List[dict], recording_date: date) -> dict:
     """Thin wrapper: returns the workout key from extract_all."""
     return extract_all(transcripts, recording_date)["workout"]
