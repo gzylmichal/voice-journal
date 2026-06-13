@@ -71,6 +71,7 @@ from pipeline.storage import (
     save_markdown,
 )
 from pipeline.lock import pipeline_lock, PipelineLocked
+from pipeline.notify import send_batch_summary
 
 LOG_FILE = Path(__file__).parent / "voice_journal.log"
 
@@ -191,6 +192,7 @@ def _run_upload_locked():
     ) or fetch_latest_bodyweight(recording_date)
 
     # Store bodyweight if newly detected and passes plausibility check
+    bw_rejected = None
     if bodyweight.get("detected") and NOTION_BODYWEIGHT_DB_ID and batch_id:
         if validate_bodyweight(bodyweight["weight_kg"], recording_date):
             ok = store_bodyweight(bodyweight["weight_kg"], recording_date)
@@ -198,6 +200,7 @@ def _run_upload_locked():
                 mark_written(recording_date, batch_id, "bodyweight")
         else:
             log.warning(f"Bodyweight {bodyweight['weight_kg']:.1f} kg failed validation — not stored")
+            bw_rejected = {"value": bodyweight["weight_kg"], "last": fetch_latest_bodyweight(recording_date)}
 
     # Write workout to DB — pass resolved bodyweight for bodyweight exercises
     wk_created = 0
@@ -232,6 +235,11 @@ def _run_upload_locked():
     log.info("=" * 60)
     log.info(f"Upload done. {len(non_empty)} memo(s) buffered{wk_info}{task_info}{cal_info}")
     log.info("=" * 60)
+
+    try:
+        send_batch_summary(workout, tasks, cal_events, bodyweight, non_empty, bw_rejected=bw_rejected)
+    except Exception as exc:
+        log.warning("send_batch_summary raised unexpectedly: %s", exc)
 
 
 # ---------------------------------------------------------------------------
