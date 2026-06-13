@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import requests
 import pytest
 
-from pipeline.notify import send_notification
+from pipeline.notify import send_notification, send_batch_summary
 
 
 def test_sends_to_correct_url():
@@ -61,3 +61,64 @@ def test_non_2xx_response_returns_false():
         mock_post.return_value = MagicMock(status_code=500)
         result = send_notification("hello")
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# send_batch_summary tests
+# ---------------------------------------------------------------------------
+
+WORKOUT_FIXTURE = {
+    "detected": True,
+    "workout_name": "Push",
+    "exercises": [
+        {
+            "name": "Bench Press",
+            "sets_detail": [
+                {"weight": "80 kg", "reps": 8},
+                {"weight": "80 kg", "reps": 8},
+                {"weight": "82.5 kg", "reps": 6},
+            ],
+        }
+    ],
+}
+
+
+def test_batch_summary_workout_only_formats_correctly():
+    """Workout-only batch produces a message containing exercise name and sets."""
+    with patch("pipeline.notify.send_notification") as mock_send:
+        send_batch_summary(
+            WORKOUT_FIXTURE, [], [], {}, [{"text": "bench press memo"}]
+        )
+    mock_send.assert_called_once()
+    message = mock_send.call_args[0][0]
+    assert "Bench Press" in message
+    assert "80x8" in message
+    assert "Workout DB" in message
+
+
+def test_batch_summary_bw_rejected_shows_correct_message():
+    """Rejected bodyweight produces 'BW rejected: X kg vs last Y kg'."""
+    with patch("pipeline.notify.send_notification") as mock_send:
+        send_batch_summary(
+            {}, [], [], {}, [],
+            bw_rejected={"value": 95, "last": 82},
+        )
+    mock_send.assert_called_once()
+    message = mock_send.call_args[0][0]
+    assert "BW rejected: 95 kg vs last 82 kg" in message
+
+
+def test_batch_summary_empty_batch_does_not_send():
+    """Empty batch (no workout, tasks, events, bodyweight) sends nothing."""
+    with patch("pipeline.notify.send_notification") as mock_send:
+        send_batch_summary({}, [], [], {}, [])
+    mock_send.assert_not_called()
+
+
+def test_batch_summary_send_notification_exception_does_not_propagate():
+    """An exception raised inside send_notification must not escape send_batch_summary."""
+    with patch("pipeline.notify.send_notification", side_effect=RuntimeError("boom")):
+        # Must not raise
+        send_batch_summary(
+            WORKOUT_FIXTURE, [], [], {}, [{"text": "test"}]
+        )
