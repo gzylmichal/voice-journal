@@ -50,6 +50,7 @@ from pipeline.extractors import (
     extract_tasks,
     extract_workout,
     format_workout_table,
+    merge_buffered_workouts,
     validate_bodyweight,
 )
 from pipeline.notion_client import (
@@ -317,8 +318,13 @@ def _run_overnight_locked():
 
     journal_md = format_journal_entry(groq_client, transcripts, recording_date)
 
-    # Append workout table to journal
-    workout = extract_workout(groq_client, transcripts, recording_date)
+    # Append workout table to journal.
+    # Buffer path: merge from what was already written during the day (no extra LLM call).
+    # Legacy fallback: no pending_writes means we came from inbox files — call extract_workout.
+    if pending_writes:
+        workout = merge_buffered_workouts(pending_writes)
+    else:
+        workout = extract_workout(groq_client, transcripts, recording_date)
     if workout.get("detected"):
         workout_table = format_workout_table(workout, recording_date)
         if workout_table:
