@@ -216,11 +216,23 @@ def stage_overnight() -> bool:
     buf_yest = TMP / "buffer" / f"{yesterday.isoformat()}.json"
     buf_today.rename(buf_yest)
 
+    overnight_ai_labels: list = []
+
+    def tracking_call_ai(user_message, system_prompt, label="AI", **kwargs):
+        overnight_ai_labels.append(label)
+        return fake_call_ai(user_message, system_prompt, label, **kwargs)
+
     with patch.object(voice_journal, "Groq", FakeGroq), \
-         patch("ai_client.call_ai", side_effect=fake_call_ai), \
+         patch("ai_client.call_ai", side_effect=tracking_call_ai), \
          patch("pipeline.notion_client.requests.post", side_effect=recording_notion_post), \
          patch("pipeline.notion_client.requests.patch", side_effect=fake_notion_post):
         voice_journal.run_overnight_mode()
+
+    check(
+        "no Workout extraction AI call (buffer path used)",
+        "Workout extraction" not in overnight_ai_labels,
+        f"AI calls made: {overnight_ai_labels}",
+    )
 
     md_files = list((TMP / "archive" / "markdown").glob(f"{yesterday.isoformat()}*.md"))
     check("journal markdown saved", len(md_files) == 1, str(list((TMP / 'archive' / 'markdown').iterdir())))
