@@ -72,6 +72,7 @@ from pipeline.storage import (
 )
 from pipeline.lock import pipeline_lock, PipelineLocked
 from pipeline.notify import send_batch_summary
+from pipeline.brief import send_preworkout_brief
 
 LOG_FILE = Path(__file__).parent / "voice_journal.log"
 
@@ -178,6 +179,13 @@ def _run_upload_locked():
     tasks      = extracted["tasks"] if NOTION_ENABLED else []
     cal_events = extracted["events"] if GCAL_ENABLED else []
     bodyweight = extracted["bodyweight"]
+
+    # Send pre-workout brief (best-effort; reads prior pending_writes before current batch)
+    try:
+        _, prior_pending_writes = load_buffer(recording_date)
+        send_preworkout_brief(workout, recording_date, pending_writes=prior_pending_writes)
+    except Exception as exc:
+        log.warning("send_preworkout_brief raised unexpectedly: %s", exc)
 
     # Buffer non-empty transcripts + extracted data — data is safe from here on
     batch_id = append_to_buffer(
