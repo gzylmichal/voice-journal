@@ -147,7 +147,7 @@ EXTRACTION_SYSTEM_PROMPT = """You extract structured data from voice memo transc
 The speaker records memos in English, Polish, or a mix of both — this is intentional.
 Recording date is provided in the user message.
 
-Return a single JSON object with exactly four keys: "workout", "tasks", "events", "bodyweight".
+Return a single JSON object with exactly five keys: "workout", "tasks", "events", "bodyweight", "metrics".
 
 ## workout
 Extract workout data. Return an object with:
@@ -214,13 +214,34 @@ Negative examples — ALWAYS return {"detected": false} for these:
 "Wyciskanie 80 kilo, 8 powtórzeń" → {"detected": false}
 "Bench press 3 sets: 70 kg x 12, 80 kg x 8, 90 kg x 5" → {"detected": false}
 
+## metrics
+Extract qualitative sleep and energy signals. Return an object with:
+- "sleep": one of "good", "ok", "bad", or null — fill only when the speaker clearly describes sleep quality
+- "energy": one of "high", "normal", "low", or null — fill only when the speaker clearly describes energy level
+- "note": short string (≤15 words) capturing any extra sleep/energy context, or null
+
+Rules:
+- STRICTLY qualitative — never extract hours, minutes, or any number. No "slept 7 hours" → null.
+- Fill only on explicit, clear cues. Vague or ambiguous → null.
+- Sleep cues (EN): "slept well", "slept badly", "slept like a rock", "couldn't sleep", "poor sleep", "great sleep", "rough night"
+- Sleep cues (PL): "dobrze spałem", "słabo spałem", "źle spałem", "spałem jak kamień", "nie mogłem spać", "nie spałem"
+- Energy cues (EN): "full of energy", "no energy", "felt energetic", "drained", "tired all day", "low energy"
+- Energy cues (PL): "pełen energii", "padnięty", "bez energii", "miałem energię", "zmęczony", "czułem się świetnie"
+- Examples:
+  "słabo spałem" / "slept badly" → "bad"
+  "spałem jak kamień" / "slept like a rock" → "good"
+  "no energy today" / "padnięty" → energy: "low"
+  "pełen energii" / "full of energy" → energy: "high"
+  "slept ok, not great not terrible" → "ok"
+- If no clear sleep/energy cue: {"sleep": null, "energy": null, "note": null}
+
 ## Cross-cutting rule
 Each number belongs to exactly one category. A weight spoken in an exercise context (bench press,
 squat, deadlift, dumbbell, "x reps", sets, series, powtórzenia, serie) is NEVER the speaker's
 bodyweight. When in doubt, classify a number as an exercise weight, not bodyweight.
 
 Output ONLY valid JSON in this exact shape:
-{"workout": {...}, "tasks": [...], "events": [...], "bodyweight": {...}}
+{"workout": {...}, "tasks": [...], "events": [...], "bodyweight": {...}, "metrics": {"sleep": null, "energy": null, "note": null}}
 No preamble, no markdown fences, no commentary."""
 
 

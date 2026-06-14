@@ -32,6 +32,23 @@ BODYWEIGHT_WEIGH_IN_PHRASES = [
     "ważę", "zważyłem", "zważyłam", "moja waga", "waga wynosi", "na wadze",
 ]
 
+# Sleep/energy keyword pre-filter. If none appear in the combined transcript,
+# the metrics block is forced to all-nulls without trusting the LLM.
+SLEEP_ENERGY_PHRASES = [
+    # English — sleep
+    "slept", "couldn't sleep", "sleep was", "poor sleep", "great sleep",
+    "rough night", "good sleep", "slept well", "slept badly", "slept ok",
+    "slept like a rock", "no energy", "full of energy", "felt energetic",
+    "low energy", "drained", "tired all day", "energy today", "felt tired",
+    # Polish — sleep
+    "spałem", "spałam", "nie spałem", "nie spałam", "nie mogłem spać",
+    "nie mogłam spać", "dobrze spałem", "słabo spałem", "źle spałem",
+    "spałem jak kamień", "spałam jak kamień",
+    # Polish — energy
+    "pełen energii", "pełna energii", "padnięty", "padnięta",
+    "bez energii", "miałem energię", "miałam energię", "zmęczony", "zmęczona",
+]
+
 # Order matters: more specific keywords first to avoid mismatch.
 MUSCLE_GROUP_RULES = [
     # Back
@@ -107,17 +124,21 @@ def _parse_json_response(raw: str):
     return json.loads(raw.strip())
 
 
+_NULL_METRICS = {"sleep": None, "energy": None, "note": None}
+
+
 def _empty_extraction() -> dict:
     return {
         "workout": {"detected": False, "exercises": []},
         "tasks": [],
         "events": [],
         "bodyweight": {"detected": False},
+        "metrics": dict(_NULL_METRICS),
     }
 
 
 def extract_all(transcripts: List[dict], recording_date: date) -> dict:
-    """Single LLM call extracting workout, tasks, events, and bodyweight."""
+    """Single LLM call extracting workout, tasks, events, bodyweight, and metrics."""
     combined_text = "\n\n".join(
         f"[{t['time']}] {t['text']}"
         for t in transcripts if not t.get("error")
@@ -126,6 +147,7 @@ def extract_all(transcripts: List[dict], recording_date: date) -> dict:
         return _empty_extraction()
 
     has_weigh_in = any(phrase in combined_text.lower() for phrase in BODYWEIGHT_WEIGH_IN_PHRASES)
+    has_sleep_energy = any(phrase in combined_text.lower() for phrase in SLEEP_ENERGY_PHRASES)
 
     user_message = (
         f"Recording date: {recording_date.strftime('%A, %B %d, %Y')} "
@@ -133,7 +155,7 @@ def extract_all(transcripts: List[dict], recording_date: date) -> dict:
         f"{combined_text}"
     )
 
-    log.info("Running unified extraction (workout + tasks + events + bodyweight)...")
+    log.info("Running unified extraction (workout + tasks + events + bodyweight + metrics)...")
 
     try:
         raw = ai_client.call_ai(
@@ -149,6 +171,7 @@ def extract_all(transcripts: List[dict], recording_date: date) -> dict:
         tasks = result.get("tasks") or []
         events = result.get("events") or []
         bodyweight = result.get("bodyweight") or {"detected": False}
+        metrics = result.get("metrics") or dict(_NULL_METRICS)
 
         if not isinstance(tasks, list):
             tasks = []
@@ -156,6 +179,8 @@ def extract_all(transcripts: List[dict], recording_date: date) -> dict:
             events = []
         if not isinstance(bodyweight, dict):
             bodyweight = {"detected": False}
+        if not isinstance(metrics, dict):
+            metrics = dict(_NULL_METRICS)
 
         # A1 bodyweight keyword pre-filter applied post-hoc
         if not has_weigh_in:
@@ -164,14 +189,29 @@ def extract_all(transcripts: List[dict], recording_date: date) -> dict:
         elif bodyweight.get("detected"):
             log.info(f"Bodyweight detected: {bodyweight.get('weight_kg')} kg")
 
+        # Sleep/energy keyword pre-filter
+        if not has_sleep_energy:
+            log.info("Metrics: no sleep/energy phrase found — forcing all nulls")
+            metrics = dict(_NULL_METRICS)
+        else:
+            # Validate values — only allow known enum values
+            valid_sleep = {"good", "ok", "bad"}
+            valid_energy = {"high", "normal", "low"}
+            if metrics.get("sleep") not in valid_sleep:
+                metrics["sleep"] = None
+            if metrics.get("energy") not in valid_energy:
+                metrics["energy"] = None
+
         if workout.get("detected"):
             log.info(f"Workout: {workout.get('workout_name')} — {len(workout.get('exercises', []))} exercise(s)")
         if tasks:
             log.info(f"Tasks: {len(tasks)} found")
         if events:
             log.info(f"Events: {len(events)} found")
+        if metrics.get("sleep") or metrics.get("energy"):
+            log.info(f"Metrics: sleep={metrics.get('sleep')} energy={metrics.get('energy')}")
 
-        return {"workout": workout, "tasks": tasks, "events": events, "bodyweight": bodyweight}
+        return {"workout": workout, "tasks": tasks, "events": events, "bodyweight": bodyweight, "metrics": metrics}
 
     except json.JSONDecodeError as e:
         log.error(f"Unified extraction: JSON parse failed: {e}")

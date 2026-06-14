@@ -66,3 +66,32 @@ def test_workout_prompt_has_rpe_and_pain():
     assert '"pain_note"' in WORKOUT_SYSTEM_PROMPT
     assert "ciężko szło" in WORKOUT_SYSTEM_PROMPT
     assert "boli" in WORKOUT_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Phase J: metrics key in extraction prompt
+# ---------------------------------------------------------------------------
+
+def test_extraction_prompt_has_metrics_key():
+    assert '"metrics"' in EXTRACTION_SYSTEM_PROMPT
+
+def test_extraction_prompt_metrics_sleep_values():
+    assert "good" in EXTRACTION_SYSTEM_PROMPT
+    assert "bad" in EXTRACTION_SYSTEM_PROMPT
+
+def test_extraction_prompt_metrics_energy_values():
+    assert "high" in EXTRACTION_SYSTEM_PROMPT
+    assert "low" in EXTRACTION_SYSTEM_PROMPT
+
+def test_extraction_prompt_metrics_polish_sleep_cues():
+    assert "spałem jak kamień" in EXTRACTION_SYSTEM_PROMPT
+    assert "słabo spałem" in EXTRACTION_SYSTEM_PROMPT
+
+def test_extraction_prompt_metrics_qualitative_only():
+    # Must explicitly state qualitative/no numbers
+    assert "qualitative" in EXTRACTION_SYSTEM_PROMPT.lower() or \
+           "never extract" in EXTRACTION_SYSTEM_PROMPT.lower() or \
+           "STRICTLY qualitative" in EXTRACTION_SYSTEM_PROMPT
+
+def test_extraction_prompt_five_keys():
+    assert "five keys" in EXTRACTION_SYSTEM_PROMPT

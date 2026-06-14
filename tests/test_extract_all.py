@@ -28,6 +28,7 @@ _FULL_RESPONSE = {
     "tasks": [{"title": "Call dentist", "description": None, "due_date": None, "priority": "Normal", "type": "Personal"}],
     "events": [{"title": "Doctor", "date": "2026-05-21", "time": "10:00", "duration_minutes": None, "notes": None}],
     "bodyweight": {"detected": True, "weight_kg": 82.5},
+    "metrics": {"sleep": "good", "energy": "high", "note": None},
 }
 
 
@@ -36,13 +37,13 @@ def _transcripts(text: str):
 
 
 # ---------------------------------------------------------------------------
-# Happy path: canned combined JSON → all four sub-results correct
+# Happy path: canned combined JSON → all five sub-results correct
 # ---------------------------------------------------------------------------
 
-def test_extract_all_parses_all_four_keys():
+def test_extract_all_parses_all_five_keys():
     with patch("ai_client.call_ai", return_value=json.dumps(_FULL_RESPONSE)):
         result = extract_all(
-            _transcripts("Bench press 80 kg. I weighed myself, 82.5 kg. Call dentist."),
+            _transcripts("Bench press 80 kg. I weighed myself, 82.5 kg. Call dentist. Slept well."),
             _DATE,
         )
     assert result["workout"]["detected"] is True
@@ -51,6 +52,8 @@ def test_extract_all_parses_all_four_keys():
     assert result["tasks"] == _FULL_RESPONSE["tasks"]
     assert result["events"] == _FULL_RESPONSE["events"]
     assert result["bodyweight"] == {"detected": True, "weight_kg": 82.5}
+    assert result["metrics"]["sleep"] == "good"
+    assert result["metrics"]["energy"] == "high"
 
 
 def test_extract_all_returns_with_json_fences():
@@ -71,6 +74,7 @@ def test_extract_all_malformed_json_returns_empty_defaults():
     assert result["tasks"] == []
     assert result["events"] == []
     assert result["bodyweight"] == {"detected": False}
+    assert result["metrics"] == {"sleep": None, "energy": None, "note": None}
 
 
 def test_extract_all_non_dict_response_returns_empty_defaults():
@@ -133,7 +137,13 @@ def test_extract_all_empty_transcripts_skips_llm():
     with patch("ai_client.call_ai") as mock_ai:
         result = extract_all([], _DATE)
     mock_ai.assert_not_called()
-    assert result == {"workout": {"detected": False, "exercises": []}, "tasks": [], "events": [], "bodyweight": {"detected": False}}
+    assert result == {
+        "workout": {"detected": False, "exercises": []},
+        "tasks": [],
+        "events": [],
+        "bodyweight": {"detected": False},
+        "metrics": {"sleep": None, "energy": None, "note": None},
+    }
 
 
 def test_extract_all_error_transcripts_only_skips_llm():
@@ -196,10 +206,65 @@ def test_extract_all_old_schema_no_rpe_key_ok():
     """Exercise dict without rpe/pain_note keys (old schema) causes no errors."""
     with patch("ai_client.call_ai", return_value=json.dumps(_FULL_RESPONSE)):
         result = extract_all(
-            _transcripts("I weighed myself today 82.5 kg. Also bench press 80 kg."),
+            _transcripts("I weighed myself today 82.5 kg. Also bench press 80 kg. Slept well."),
             _DATE,
         )
     ex = result["workout"]["exercises"][0]
     # Old schema: keys simply absent — no KeyError, no crash
     assert "name" in ex
     assert result["workout"]["detected"] is True
+
+
+# ---------------------------------------------------------------------------
+# Phase J: metrics pre-filter + extraction
+# ---------------------------------------------------------------------------
+
+_RESPONSE_WITH_METRICS = {
+    "workout": {"detected": False, "workout_name": None, "exercises": []},
+    "tasks": [],
+    "events": [],
+    "bodyweight": {"detected": False},
+    "metrics": {"sleep": "bad", "energy": "low", "note": "rough night"},
+}
+
+
+def test_metrics_extracted_when_sleep_phrase_present():
+    """Sleep phrase in transcript → metrics pass through pre-filter."""
+    with patch("ai_client.call_ai", return_value=json.dumps(_RESPONSE_WITH_METRICS)):
+        result = extract_all(_transcripts("Słabo spałem dzisiaj, padnięty"), _DATE)
+    assert result["metrics"]["sleep"] == "bad"
+    assert result["metrics"]["energy"] == "low"
+
+
+def test_metrics_forced_null_when_no_sleep_phrase():
+    """No sleep/energy phrase → metrics forced to all nulls regardless of LLM output."""
+    with patch("ai_client.call_ai", return_value=json.dumps(_RESPONSE_WITH_METRICS)):
+        result = extract_all(_transcripts("Bench press 80 kg, 3 sets of 8"), _DATE)
+    assert result["metrics"]["sleep"] is None
+    assert result["metrics"]["energy"] is None
+    assert result["metrics"]["note"] is None
+
+
+def test_metrics_invalid_enum_coerced_to_null():
+    """If LLM returns an unexpected enum value, it is coerced to None."""
+    bad = dict(_RESPONSE_WITH_METRICS)
+    bad["metrics"] = {"sleep": "excellent", "energy": "turbo", "note": None}
+    with patch("ai_client.call_ai", return_value=json.dumps(bad)):
+        result = extract_all(_transcripts("Slept well today"), _DATE)
+    assert result["metrics"]["sleep"] is None
+    assert result["metrics"]["energy"] is None
+
+
+def test_metrics_missing_from_response_defaults_to_null():
+    """AI response missing 'metrics' key → safe default all-nulls."""
+    no_metrics = {k: v for k, v in _FULL_RESPONSE.items() if k != "metrics"}
+    with patch("ai_client.call_ai", return_value=json.dumps(no_metrics)):
+        result = extract_all(_transcripts("Slept well. I weigh 82.5 kg."), _DATE)
+    assert result["metrics"] == {"sleep": None, "energy": None, "note": None}
+
+
+def test_metrics_empty_transcripts_returns_null():
+    with patch("ai_client.call_ai") as mock_ai:
+        result = extract_all([], _DATE)
+    mock_ai.assert_not_called()
+    assert result["metrics"] == {"sleep": None, "energy": None, "note": None}
