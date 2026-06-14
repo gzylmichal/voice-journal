@@ -491,6 +491,123 @@ def recommend_progression(history: list[dict]) -> dict:
     }
 
 
+def detect_prs(entries: list[dict], window_days: int) -> dict:
+    """Detect weight-PRs and rep-PRs within the last window_days days.
+
+    Args:
+        entries: list of workout entry dicts with keys: exercise, date (ISO str),
+                 weight (sets string), top_set_kg, sets, reps, muscle_group, session.
+        window_days: only entries within the last window_days days are PR candidates;
+                     ALL entries serve as the historical baseline.
+
+    Returns:
+        dict keyed by exercise name. Each value is a list of PR dicts:
+          weight-PR: {kind, date, weight_kg, reps, prev_best_kg}
+          rep-PR:    {kind, date, weight_kg, reps, prev_best_reps}
+    """
+    if not entries:
+        return {}
+
+    # Determine cutoff date for the window
+    today = date.today()
+    cutoff = today - timedelta(days=window_days)
+
+    # Parse all entries: collect (date_obj, sets) per exercise
+    # sorted ascending by date so we can build a rolling baseline
+    by_exercise: dict[str, list[tuple]] = defaultdict(list)
+    for e in entries:
+        exercise = e.get("exercise", "")
+        if not exercise:
+            continue
+        date_str = e.get("date", "")
+        try:
+            date_obj = datetime.fromisoformat(date_str).date()
+        except (ValueError, TypeError):
+            continue
+        sets = parse_sets_string(e.get("weight", ""))
+        if not sets:
+            continue
+        by_exercise[exercise].append((date_obj, date_str, sets))
+
+    result: dict[str, list[dict]] = {}
+
+    for exercise, sessions in by_exercise.items():
+        # Sort by date ascending
+        sessions_sorted = sorted(sessions, key=lambda t: t[0])
+
+        prs: list[dict] = []
+
+        for i, (date_obj, date_str, sets) in enumerate(sessions_sorted):
+            # Only PR-candidate if within the window
+            if date_obj <= cutoff:
+                continue
+
+            # Build baseline from ALL entries BEFORE this date
+            prior_sessions = [s for s in sessions_sorted if s[0] < date_obj]
+
+            # First-ever entry for this exercise → not a PR
+            if not prior_sessions:
+                continue
+
+            # --- Weight PR check ---
+            valid_sets = [(w, r) for w, r in sets if w > 0]
+            if not valid_sets:
+                continue
+
+            max_weight = max(w for w, r in valid_sets)
+
+            # Prior best weight across all prior sessions
+            prior_best_kg: float = 0.0
+            for _, _, prior_sets in prior_sessions:
+                for w, r in prior_sets:
+                    if w > prior_best_kg:
+                        prior_best_kg = w
+
+            if max_weight > prior_best_kg:
+                # Find reps at max weight in this session
+                reps_at_max = max(
+                    (r for w, r in valid_sets if w == max_weight),
+                    default=0,
+                )
+                prs.append({
+                    "kind": "weight",
+                    "date": date_str,
+                    "weight_kg": max_weight,
+                    "reps": reps_at_max,
+                    "prev_best_kg": prior_best_kg,
+                })
+                # Skip rep-PR check for this session — weight PR takes precedence
+                continue
+
+            # --- Rep PR check ---
+            # For each (weight, reps) pair, check if reps > max(reps at weight >= this_weight in prior)
+            for w, r in valid_sets:
+                if w <= 0 or r <= 0:
+                    continue
+
+                # Max reps seen in prior sessions at any weight >= w
+                prior_best_reps = 0
+                for _, _, prior_sets in prior_sessions:
+                    for pw, pr in prior_sets:
+                        if pw >= w and pr > prior_best_reps:
+                            prior_best_reps = pr
+
+                if prior_best_reps > 0 and r > prior_best_reps:
+                    prs.append({
+                        "kind": "reps",
+                        "date": date_str,
+                        "weight_kg": w,
+                        "reps": r,
+                        "prev_best_reps": prior_best_reps,
+                    })
+                    break  # one rep-PR per session per exercise is enough
+
+        if prs:
+            result[exercise] = prs
+
+    return result
+
+
 _BODY_PART_KEYWORDS: dict[str, list[str]] = {
     "knee":     ["knee", "kolano", "knees", "patella"],
     "shoulder": ["shoulder", "bark", "shoulders", "rotator"],

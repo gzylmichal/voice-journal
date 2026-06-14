@@ -13,6 +13,7 @@ from analytics import (
     identify_benchmark,
     compute_metrics,
     recommend_progression,
+    detect_prs,
 )
 from weekly_report import format_metrics_for_llm
 
@@ -618,3 +619,72 @@ def test_format_metrics_includes_pain_pattern():
     metrics = compute_metrics(entries, 2)
     out = format_metrics_for_llm(metrics)
     assert "PAIN PATTERN" in out or "shoulder" in out, out[-300:]
+
+
+# ---------------------------------------------------------------------------
+# detect_prs
+# ---------------------------------------------------------------------------
+
+def _pr_entry(exercise, date_str, weight_str):
+    """Build a minimal workout entry for detect_prs tests."""
+    return {
+        "exercise": exercise,
+        "date": date_str,
+        "session": "",
+        "muscle_group": "Chest",
+        "sets": 3,
+        "reps": 5,
+        "weight": weight_str,
+        "top_set_kg": 0.0,
+    }
+
+
+def test_detect_prs_first_ever_no_pr():
+    """Single entry for an exercise — first-ever — should NOT be flagged as a PR."""
+    entries = [_pr_entry("Squat", "2026-06-10", "100x5")]
+    result = detect_prs(entries, window_days=30)
+    # Either the exercise is absent or its PR list is empty
+    assert result.get("Squat", []) == []
+
+
+def test_detect_prs_weight_pr():
+    """Window entry sets a new weight high — should return a weight-PR."""
+    entries = [
+        _pr_entry("Deadlift", "2026-05-01", "80x5, 85x3, 90x1"),   # prior
+        _pr_entry("Deadlift", "2026-06-10", "80x5, 85x3, 92.5x1"), # window: new max
+    ]
+    result = detect_prs(entries, window_days=30)
+    assert "Deadlift" in result
+    prs = result["Deadlift"]
+    assert len(prs) == 1
+    pr = prs[0]
+    assert pr["kind"] == "weight"
+    assert pr["weight_kg"] == 92.5
+    assert pr["prev_best_kg"] == 90.0
+
+
+def test_detect_prs_rep_pr_equal_weight():
+    """More reps at the same weight — should return a rep-PR (not a weight-PR)."""
+    entries = [
+        _pr_entry("Bench press", "2026-05-01", "80x6"),   # prior: 6 reps at 80
+        _pr_entry("Bench press", "2026-06-10", "80x8"),   # window: 8 reps at 80
+    ]
+    result = detect_prs(entries, window_days=30)
+    assert "Bench press" in result
+    prs = result["Bench press"]
+    assert len(prs) == 1
+    pr = prs[0]
+    assert pr["kind"] == "reps"
+    assert pr["weight_kg"] == 80.0
+    assert pr["reps"] == 8
+    assert pr["prev_best_reps"] == 6
+
+
+def test_detect_prs_no_pr():
+    """Window entry is lighter than prior max and fewer reps — no PR."""
+    entries = [
+        _pr_entry("Romanian deadlift", "2026-05-01", "90x1, 87.5x5"),  # prior max=90, 5 reps@87.5
+        _pr_entry("Romanian deadlift", "2026-06-10", "87.5x3"),         # window: lighter, fewer reps
+    ]
+    result = detect_prs(entries, window_days=30)
+    assert result.get("Romanian deadlift", []) == []
