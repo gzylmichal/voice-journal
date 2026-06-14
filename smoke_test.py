@@ -94,6 +94,8 @@ CANNED_AI = {
         "tasks": [],
         "events": [],
         "bodyweight": {"detected": True, "weight_kg": 82.5},
+        "metrics": {"sleep": None, "energy": None, "note": None},
+        "query": {"detected": False, "question": None},
     }),
     # Legacy individual labels kept for any direct wrapper calls
     "Workout extraction": json.dumps(_CANNED_WORKOUT),
@@ -101,6 +103,22 @@ CANNED_AI = {
     "Calendar extraction": "[]",
     "Bodyweight extraction": json.dumps({"detected": True, "weight_kg": 82.5}),
     "Journal": "## Smoke day\n\nDid a push day.\n\n*[1 memos · processed]*",
+    "Query answer": "Last bench press: 80 kg × 8 (2026-06-07)",
+}
+
+_CANNED_QUERY_EXTRACTION = json.dumps({
+    "workout": {"detected": False, "workout_name": None, "exercises": []},
+    "tasks": [],
+    "events": [],
+    "bodyweight": {"detected": False},
+    "metrics": {"sleep": None, "energy": None, "note": None},
+    "query": {"detected": True, "question": "What did I bench last time?"},
+})
+
+_CANNED_WORKOUT_HISTORY = {
+    "Bench press": [
+        {"date": "2026-06-07", "sets": 3, "reps": 8, "weight": "80 kg"},
+    ]
 }
 
 
@@ -257,12 +275,82 @@ def stage_overnight() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Stage 4: query memo — history lookup, no journal write, push answer
+# ---------------------------------------------------------------------------
+
+def stage_query() -> bool:
+    print("\n[4/4] Query memo: history question → no buffer/journal, answer push")
+    before = len(FAILURES)
+
+    # Inline the query path: create a fake inbox audio file, patch extraction to
+    # return query.detected=True, patch fetch to return canned history, and verify
+    # (a) buffer not written, (b) push contains the answer from fetched rows.
+    query_inbox = TMP / "inbox"
+    query_inbox.mkdir(parents=True, exist_ok=True)
+    fake_audio = query_inbox / "query_memo.m4a"
+    fake_audio.write_bytes(b"fake-query-audio")
+
+    push_calls: list = []
+
+    def recording_send_notification(message, title="Voice Journal", **kw):
+        push_calls.append({"message": message, "title": title})
+        return True
+
+    buf_path = TMP / "buffer" / f"{date.today().isoformat()}.json"
+    buf_existed_before = buf_path.exists()
+
+    def query_extraction(transcripts, recording_date):
+        import json as _json
+        return _json.loads(_CANNED_QUERY_EXTRACTION)
+
+    def query_call_ai(user_message, system_prompt, label="AI", **kwargs):
+        return CANNED_AI.get(label, "[]")
+
+    with patch.object(voice_journal, "Groq", FakeGroq), \
+         patch("ai_client.call_ai", side_effect=query_call_ai), \
+         patch("voice_journal.extract_all", side_effect=query_extraction), \
+         patch("voice_journal.fetch_prior_workout_session", return_value=_CANNED_WORKOUT_HISTORY), \
+         patch("voice_journal.send_notification", side_effect=recording_send_notification):
+        voice_journal.run_upload_mode()
+
+    # Buffer must NOT have been written (or not gained a new entry) for this query batch
+    if buf_path.exists() and not buf_existed_before:
+        check(
+            "query memo did NOT create a buffer entry",
+            False,
+            "Buffer file was created by query memo",
+        )
+    else:
+        check("query memo did NOT create a new buffer entry", True)
+
+    # Query audio archived — inbox should be empty
+    check("query audio archived (inbox empty)", not fake_audio.exists())
+
+    # Answer push was sent
+    check("answer push was attempted", len(push_calls) >= 1, f"push_calls: {push_calls}")
+    if push_calls:
+        check(
+            "push title is Training history",
+            push_calls[-1]["title"] == "Training history",
+            str(push_calls[-1]),
+        )
+        check(
+            "push answer contains data from fetched rows (Bench press)",
+            "bench" in push_calls[-1]["message"].lower() or "80" in push_calls[-1]["message"],
+            push_calls[-1]["message"],
+        )
+
+    return len(FAILURES) == before
+
+
+# ---------------------------------------------------------------------------
 
 def main():
     print(f"Smoke test sandbox: {TMP}")
     stage_receiver()
     stage_upload()
     stage_overnight()
+    stage_query()
 
     print()
     if FAILURES:
