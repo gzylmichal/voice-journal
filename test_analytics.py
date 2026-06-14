@@ -768,3 +768,32 @@ def test_no_gap_alert_when_muscle_has_sets():
     metrics = compute_metrics(entries, 4)
     out = format_metrics_for_llm(metrics)
     assert "--- Training Gaps ---" not in out
+
+
+# ---------------------------------------------------------------------------
+# weight_svg_overlay
+# ---------------------------------------------------------------------------
+
+from weekly_report import _build_weight_svg
+
+
+def test_weight_svg_two_series_when_e1rm_present():
+    """When e1rm_series has 2+ in-range points, SVG contains 2 polylines."""
+    bw = [("2026-04-21", 82.0), ("2026-05-19", 81.5)]
+    # 2026-W18 Monday = 2026-04-27, 2026-W20 Monday = 2026-05-11 — both in range
+    e1rm = {"bench": [("2026-W18", 105.0), ("2026-W20", 106.0)]}
+    svg = _build_weight_svg(bw, e1rm)
+    assert svg.count("<polyline") >= 2
+
+
+def test_weight_svg_one_series_when_e1rm_absent():
+    """No e1rm_series → exactly 1 polyline (bw only)."""
+    bw = [("2026-04-21", 82.0), ("2026-04-28", 81.8), ("2026-05-05", 81.5)]
+    svg = _build_weight_svg(bw)
+    assert svg.count("<polyline") == 1
+
+
+def test_weight_svg_fallback_no_crash_empty_e1rm():
+    """Empty e1rm_series dict → falls back to single-series, no crash."""
+    result = _build_weight_svg([("2026-04-21", 82.0), ("2026-05-05", 81.5)], {})
+    assert isinstance(result, str) and len(result) > 0

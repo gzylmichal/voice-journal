@@ -866,15 +866,63 @@ def _build_progression_svg(series: dict) -> str:
     return "\n".join(parts)
 
 
-def _build_weight_svg(entries: list) -> str:
-    """Inline SVG line chart of bodyweight over time. Returns '' if fewer than 2 points."""
+def _build_weight_svg(entries: list, e1rm_series: Optional[dict] = None) -> str:
+    """Inline SVG line chart of bodyweight over time. Returns '' if fewer than 2 points.
+
+    When e1rm_series is provided and has >=2 points in range, overlays a normalized
+    e1RM trend line on a right Y-axis (orange, dashed).
+    """
     if len(entries) < 2:
         return ""
 
     dates   = [e[0] for e in entries]
     weights = [e[1] for e in entries]
 
-    W, H, PAD = 560, 140, 40
+    # --- Try to build e1rm overlay ---
+    overlay_points: list = []   # [(x_pos, y_pos), ...]
+    e1rm_right_ticks = ""
+    e1rm_label = ""
+    e1rm_polyline = ""
+    has_overlay = False
+
+    try:
+        if e1rm_series:
+            # Pick first non-empty series: bench → deadlift → squat
+            chosen_lift = None
+            chosen_data = []
+            for lift in ("bench", "deadlift", "squat"):
+                data = e1rm_series.get(lift, [])
+                if len(data) >= 2:
+                    chosen_lift = lift
+                    chosen_data = data
+                    break
+
+            if chosen_lift and chosen_data:
+                bw_min_date = dates[0]
+                bw_max_date = dates[-1]
+
+                # Convert e1rm week strings to Monday ISO dates
+                filtered = []
+                for week_str, val in chosen_data:
+                    mon_date = datetime.strptime(f"{week_str}-1", "%G-W%V-%u").date()
+                    mon_str = mon_date.isoformat()
+                    if bw_min_date <= mon_str <= bw_max_date:
+                        filtered.append((mon_str, val))
+
+                if len(filtered) >= 2:
+                    has_overlay = True
+                    W_overlay = 580  # wider to accommodate right axis
+                else:
+                    W_overlay = 560
+            else:
+                W_overlay = 560
+        else:
+            W_overlay = 560
+    except Exception:
+        has_overlay = False
+        W_overlay = 560
+
+    W, H, PAD = W_overlay, 140, 40
     min_w = min(weights) - 0.5
     max_w = max(weights) + 0.5
     span_w = max_w - min_w or 1.0
@@ -906,13 +954,85 @@ def _build_weight_svg(entries: list) -> str:
             f'font-size="10" fill="#999">{v:.1f}</text>\n'
         )
 
+    # Build overlay SVG elements if we have usable data
+    if has_overlay:
+        try:
+            bw_min_date = dates[0]
+            bw_max_date = dates[-1]
+
+            # Re-derive filtered data (has_overlay guarantees this succeeds)
+            chosen_data_full = []
+            for lift in ("bench", "deadlift", "squat"):
+                data = e1rm_series.get(lift, [])
+                if len(data) >= 2:
+                    chosen_data_full = data
+                    break
+
+            filtered = []
+            for week_str, val in chosen_data_full:
+                mon_date = datetime.strptime(f"{week_str}-1", "%G-W%V-%u").date()
+                mon_str = mon_date.isoformat()
+                if bw_min_date <= mon_str <= bw_max_date:
+                    filtered.append((mon_str, val))
+
+            e1rm_vals = [v for _, v in filtered]
+            e1rm_min = min(e1rm_vals) - 5
+            e1rm_max = max(e1rm_vals) + 5
+            e1rm_span = e1rm_max - e1rm_min or 1.0
+
+            def ey(v: float) -> float:
+                return H - PAD - (v - e1rm_min) / e1rm_span * (H - 2 * PAD)
+
+            # Date-based x position using linear interpolation
+            from datetime import date as _date
+            d_min = _date.fromisoformat(bw_min_date)
+            d_max = _date.fromisoformat(bw_max_date)
+            total_days = (d_max - d_min).days or 1
+
+            def ex(date_str: str) -> float:
+                d = _date.fromisoformat(date_str)
+                ratio = (d - d_min).days / total_days
+                return PAD + ratio * (W - 2 * PAD)
+
+            overlay_pts = " ".join(
+                f"{ex(ds):.1f},{ey(v):.1f}" for ds, v in filtered
+            )
+
+            # Right Y-axis tick labels at e1rm_min+5 and e1rm_max-5
+            tick_lo = round(e1rm_min + 5)
+            tick_hi = round(e1rm_max - 5)
+            e1rm_right_ticks = (
+                f'<text x="{W - 5}" y="{ey(tick_lo):.1f}" text-anchor="start" '
+                f'font-size="10" fill="#E87040">{tick_lo}</text>\n'
+                f'<text x="{W - 5}" y="{ey(tick_hi):.1f}" text-anchor="start" '
+                f'font-size="10" fill="#E87040">{tick_hi}</text>\n'
+            )
+
+            e1rm_label = (
+                f'<text x="{W - 35}" y="{PAD - 4}" text-anchor="start" '
+                f'font-size="10" fill="#E87040">e1RM</text>\n'
+            )
+
+            e1rm_polyline = (
+                f'<polyline points="{overlay_pts}" fill="none" stroke="#E87040" '
+                f'stroke-width="1.5" stroke-dasharray="4 2"/>\n'
+            )
+        except Exception:
+            # Fall back silently — render without overlay
+            e1rm_right_ticks = ""
+            e1rm_label = ""
+            e1rm_polyline = ""
+
     return (
         f'<svg width="{W}" height="{H + 24}" xmlns="http://www.w3.org/2000/svg" '
         f'style="font-family:sans-serif;display:block;margin:12px auto">\n'
         f'  <text x="{W//2}" y="14" text-anchor="middle" font-size="13" '
         f'font-weight="bold" fill="#333">Bodyweight — {current} ({delta_str})</text>\n'
         f'  {y_ticks}'
+        f'  {e1rm_right_ticks}'
+        f'  {e1rm_label}'
         f'  <polyline points="{points}" fill="none" stroke="#4A90E2" stroke-width="2"/>\n'
+        f'  {e1rm_polyline}'
         f'  {dots}\n'
         f'  <text x="{wx(0):.1f}" y="{H + 18}" text-anchor="middle" '
         f'font-size="10" fill="#888">{label_l}</text>\n'
@@ -1268,6 +1388,7 @@ def main():
 
     # Build combined prompt + extract 1RM estimates
     e1rm_estimates: dict = {}
+    metrics: dict = {}
     if _ANALYTICS_AVAILABLE:
         try:
             metrics = compute_metrics(entries, args.weeks)
@@ -1281,6 +1402,7 @@ def main():
 
     # Fetch all-time data for progression graph
     progression_svg = ""
+    e1rm_series: dict = {}
     try:
         all_pages   = fetch_all_workout_entries()
         all_entries = [parse_entry(p) for p in all_pages]
@@ -1295,7 +1417,7 @@ def main():
     weight_svg = ""
     try:
         bw_entries = fetch_bodyweight_entries(args.weeks)
-        weight_svg = _build_weight_svg(bw_entries)
+        weight_svg = _build_weight_svg(bw_entries, e1rm_series if e1rm_series else None)
         log.info(f"Bodyweight trend: {len(bw_entries)} data point(s)")
     except Exception as exc:
         log.warning(f"Bodyweight trend failed (non-fatal): {exc}")
@@ -1329,6 +1451,11 @@ def main():
             f"Average: {avg_bw:.1f} kg\n"
             f"Comment on the athlete's weight trend in the context of their training."
         )
+        if (delta_bw < -0.2 and _ANALYTICS_AVAILABLE and metrics and
+                any(not metrics.get("strength_progression", {}).get(lift, {}).get("insufficient_data")
+                    and metrics["strength_progression"][lift].get("trend") in ("improving", "stable")
+                    for lift in ("bench", "deadlift", "squat"))):
+            bw_prompt_section += f"\nRecomposition signal: weight {delta_bw:+.1f} kg, strength held → recomposition on track."
 
     # Last-7-day muscle split section for LLM
     muscle_prompt_section = ""
