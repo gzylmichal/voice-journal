@@ -85,6 +85,16 @@ Return a JSON object with:
     - Preserve the actual weights and reps spoken — do NOT average or discard variation
   - "is_bodyweight": true if the exercise primarily uses the athlete's own bodyweight (pull-ups, chin-ups, dips, push-ups, bodyweight squats, lunges, pistol squats, ring dips, muscle-ups, etc.), false otherwise
   - "added_weight_kg": float if extra load is added to a bodyweight exercise (e.g. "pull-ups with 10 kg vest" → 10.0, "dips +20 kg" → 20.0), null otherwise
+  - "rpe": float 1–10 or null — fill ONLY on a clear effort cue, NEVER guess from weights alone
+    EN cues: "RPE 8", "hard", "tough", "really heavy", "easy", "light", "to failure"
+    PL cues: "RPE", "ciężko szło", "do upadku", "lekko poszło", "bardzo ciężko", "łatwo"
+    Examples: "RPE 8" → 8.0 · "felt easy" → 6.0 · "to failure" → 10.0 · "ciężko szło" → 8.5
+    If no clear effort cue: null
+  - "pain_note": short string (≤10 words, verbatim-ish) or null — fill only when pain/discomfort explicitly mentioned alongside the exercise
+    EN cues: "hurt", "pain", "twinge", "felt off", "sharp", "sore" + body part
+    PL cues: "boli", "bolało", "kolano", "bark", "nadgarstek", "źle czułem", "poczułem ból" + body part
+    Examples: "knee felt off" → "knee felt off" · "bark boli" → "bark boli" · general fatigue → null
+    If no pain/discomfort cue for this exercise: null
 
 Rules:
 - If multiple memos describe the same exercise, merge them into one entry
@@ -151,6 +161,12 @@ Extract workout data. Return an object with:
     - Preserve actual weights and reps spoken — do NOT average or discard variation
   - "is_bodyweight": true if exercise primarily uses the athlete's own bodyweight (pull-ups, chin-ups, dips, push-ups, bodyweight squats, etc.)
   - "added_weight_kg": float if extra load added to a bodyweight exercise, null otherwise
+  - "rpe": float 1–10 or null — fill ONLY on a clear effort cue, NEVER guess from weights alone
+    EN cues: "RPE 8", "hard", "tough", "easy", "to failure" · PL: "ciężko szło", "do upadku", "lekko poszło"
+    Examples: "RPE 8" → 8.0 · "to failure" → 10.0 · "felt easy" → 6.0 · no cue → null
+  - "pain_note": short string (≤10 words, verbatim-ish) or null — fill only on explicit pain/discomfort for this exercise
+    EN cues: "hurt", "pain", "twinge", "felt off" + body part · PL: "boli", "kolano", "bark", "ból" + body part
+    Examples: "knee felt off" → "knee felt off" · "bark boli" → "bark boli" · general fatigue → null
 
 Workout rules:
 - Merge multiple memos describing the same exercise into one entry

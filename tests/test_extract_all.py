@@ -142,3 +142,64 @@ def test_extract_all_error_transcripts_only_skips_llm():
         result = extract_all(transcripts, _DATE)
     mock_ai.assert_not_called()
     assert result["workout"]["detected"] is False
+
+
+# ---------------------------------------------------------------------------
+# Phase I: rpe + pain_note pass through extraction unchanged
+# ---------------------------------------------------------------------------
+
+_RESPONSE_WITH_RPE = {
+    "workout": {
+        "detected": True,
+        "workout_name": "Push day",
+        "exercises": [{
+            "name": "Bench press",
+            "sets": 3,
+            "sets_detail": [{"reps": 8, "weight": "80 kg"}] * 3,
+            "is_bodyweight": False,
+            "added_weight_kg": None,
+            "rpe": 8.0,
+            "pain_note": "left shoulder twinge",
+        }],
+    },
+    "tasks": [],
+    "events": [],
+    "bodyweight": {"detected": False},
+}
+
+
+def test_extract_all_rpe_and_pain_note_pass_through():
+    """rpe and pain_note in AI response are preserved in result unchanged."""
+    with patch("ai_client.call_ai", return_value=json.dumps(_RESPONSE_WITH_RPE)):
+        result = extract_all(_transcripts("Bench press, RPE 8, shoulder twinge"), _DATE)
+    ex = result["workout"]["exercises"][0]
+    assert ex.get("rpe") == 8.0
+    assert ex.get("pain_note") == "left shoulder twinge"
+
+
+def test_extract_all_null_rpe_pain_preserved():
+    """Null rpe/pain_note also pass through without errors."""
+    response = dict(_FULL_RESPONSE)
+    response["workout"]["exercises"][0]["rpe"] = None
+    response["workout"]["exercises"][0]["pain_note"] = None
+    with patch("ai_client.call_ai", return_value=json.dumps(response)):
+        result = extract_all(
+            _transcripts("I weighed myself today 82.5 kg. Also bench press 80 kg."),
+            _DATE,
+        )
+    ex = result["workout"]["exercises"][0]
+    assert ex.get("rpe") is None
+    assert ex.get("pain_note") is None
+
+
+def test_extract_all_old_schema_no_rpe_key_ok():
+    """Exercise dict without rpe/pain_note keys (old schema) causes no errors."""
+    with patch("ai_client.call_ai", return_value=json.dumps(_FULL_RESPONSE)):
+        result = extract_all(
+            _transcripts("I weighed myself today 82.5 kg. Also bench press 80 kg."),
+            _DATE,
+        )
+    ex = result["workout"]["exercises"][0]
+    # Old schema: keys simply absent — no KeyError, no crash
+    assert "name" in ex
+    assert result["workout"]["detected"] is True
