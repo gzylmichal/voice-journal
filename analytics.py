@@ -491,16 +491,118 @@ def recommend_progression(history: list[dict]) -> dict:
     }
 
 
+_BODY_PART_KEYWORDS: dict[str, list[str]] = {
+    "knee":     ["knee", "kolano", "knees", "patella"],
+    "shoulder": ["shoulder", "bark", "shoulders", "rotator"],
+    "wrist":    ["wrist", "nadgarstek", "wrists"],
+    "elbow":    ["elbow", "łokieć"],
+    "back":     ["back", "kręgosłup", "plecy", "lower back", "spine"],
+    "hip":      ["hip", "biodro", "hips"],
+    "ankle":    ["ankle", "kostka"],
+    "neck":     ["neck", "szyja", "kark"],
+}
+
+
+def _extract_body_part(pain_note: str) -> Optional[str]:
+    note_lower = pain_note.lower()
+    for part, keywords in _BODY_PART_KEYWORDS.items():
+        if any(kw in note_lower for kw in keywords):
+            return part
+    return None
+
+
+def _compute_rpe_signals(entries: list[dict], strength_progression: dict) -> dict:
+    """Compute RPE trends and pain pattern signals from workout entries.
+
+    No-ops cleanly when no entries carry rpe or pain_note (older data).
+    Returns:
+        avg_rpe_by_exercise:  {exercise: {iso_week: avg_rpe}}
+        fatigue_flags:        list of {lift, reason} — e1RM flat + RPE rising
+        pain_patterns:        list of {body_part, occurrences} — ≥2 occurrences
+    """
+    rpe_by_ex_week: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    pain_counts: dict[str, int] = defaultdict(int)
+
+    for entry in entries:
+        rpe = entry.get("rpe")
+        exercise = entry.get("exercise", "")
+        date_str = entry.get("date", "")
+        pain = entry.get("pain_note")
+
+        if rpe is not None:
+            week = _iso_week(date_str)
+            rpe_by_ex_week[exercise][week].append(float(rpe))
+
+        if pain:
+            part = _extract_body_part(pain)
+            if part:
+                pain_counts[part] += 1
+
+    avg_rpe: dict[str, dict[str, float]] = {
+        ex: {
+            week: round(sum(rlist) / len(rlist), 1)
+            for week, rlist in week_data.items()
+        }
+        for ex, week_data in rpe_by_ex_week.items()
+    }
+
+    # Fatigue flags: benchmark lift where e1RM is flat/stable AND RPE is rising
+    fatigue_flags: list[dict] = []
+    for lift_key in ("bench", "deadlift", "squat"):
+        sp = strength_progression.get(lift_key, {})
+        if sp.get("insufficient_data"):
+            continue
+        if sp.get("trend") == "improving":
+            continue  # rising e1RM → not a fatigue signal
+
+        # Collect RPE values for all exercises matching this lift, sorted by date
+        lift_entries_with_rpe = sorted(
+            [
+                (e.get("date", ""), e.get("rpe"))
+                for e in entries
+                if identify_benchmark(e.get("exercise", "")) == lift_key
+                and e.get("rpe") is not None
+            ],
+            key=lambda t: t[0],
+        )
+        if len(lift_entries_with_rpe) < 2:
+            continue
+        rpe_series = [r for _, r in lift_entries_with_rpe]
+        rpe_slope = linear_slope(rpe_series)
+        if rpe_slope > 0:
+            fatigue_flags.append({
+                "lift": lift_key,
+                "reason": (
+                    f"e1RM {sp['trend']} (plateau_risk={sp['plateau_risk']}) "
+                    f"while RPE rising (+{rpe_slope:.1f}/session)"
+                ),
+            })
+
+    pain_patterns = [
+        {"body_part": part, "occurrences": count}
+        for part, count in sorted(pain_counts.items())
+        if count >= 2
+    ]
+
+    return {
+        "avg_rpe_by_exercise": avg_rpe,
+        "fatigue_flags":       fatigue_flags,
+        "pain_patterns":       pain_patterns,
+    }
+
+
 def compute_metrics(entries: list[dict], weeks: int) -> dict:
     """Single entry point. Returns combined metrics dict."""
     dates = sorted(e["date"] for e in entries if e.get("date"))
+    strength = _compute_strength_progression(entries)
     return {
         "analysis_window": {
             "start": dates[0] if dates else "—",
             "end":   dates[-1] if dates else "—",
             "weeks": weeks,
         },
-        "strength_progression": _compute_strength_progression(entries),
+        "strength_progression": strength,
         "adherence":            _compute_adherence(entries, weeks),
         "volume_distribution":  _compute_volume_distribution(entries, weeks),
+        "rpe_signals":          _compute_rpe_signals(entries, strength),
     }

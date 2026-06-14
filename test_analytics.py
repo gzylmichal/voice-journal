@@ -513,3 +513,108 @@ def test_format_empty_entries():
     out = format_metrics_for_llm(metrics)
     assert "--- Strength Progression ---" in out
     assert "insufficient data" in out
+
+
+# ---------------------------------------------------------------------------
+# RPE signals (via compute_metrics)
+# ---------------------------------------------------------------------------
+
+def _entry_rpe(exercise, date_str, weight, rpe=None, pain_note=None):
+    e = _make_entry(exercise, date_str, "Chest", 3, 8, weight, float(weight.split("x")[0]) if "x" in weight else 0)
+    if rpe is not None:
+        e["rpe"] = rpe
+    if pain_note is not None:
+        e["pain_note"] = pain_note
+    return e
+
+
+def test_avg_rpe_computed_per_exercise_week():
+    entries = [
+        _entry_rpe("Bench press", "2026-04-21", "80x8", rpe=7.0),
+        _entry_rpe("Bench press", "2026-04-21", "80x8", rpe=9.0),
+        _entry_rpe("Bench press", "2026-04-28", "80x8", rpe=8.0),
+    ]
+    metrics = compute_metrics(entries, 2)
+    avg = metrics["rpe_signals"]["avg_rpe_by_exercise"].get("Bench press", {})
+    # Week of Apr 21: avg of 7 and 9 = 8.0
+    april_week = [v for k, v in avg.items() if "W17" in k or "2026-W" in k]
+    assert any(abs(v - 8.0) < 0.1 for v in avg.values()), f"avg: {avg}"
+
+
+def test_fatigue_flag_flat_e1rm_rising_rpe():
+    """Flat e1RM + rising RPE → fatigue flag for that lift."""
+    entries = [
+        _entry_rpe("Bench press", "2026-04-07", "90x1", rpe=7.0),
+        _entry_rpe("Bench press", "2026-04-14", "90x1", rpe=8.0),
+        _entry_rpe("Bench press", "2026-04-21", "90x1", rpe=9.0),
+    ]
+    metrics = compute_metrics(entries, 4)
+    flags = metrics["rpe_signals"]["fatigue_flags"]
+    assert any(f["lift"] == "bench" for f in flags), f"flags: {flags}"
+
+
+def test_no_fatigue_flag_when_e1rm_improving():
+    """Rising e1RM → no fatigue flag even if RPE also rises."""
+    entries = [
+        _entry_rpe("Bench press", "2026-04-07", "85x1", rpe=7.0),
+        _entry_rpe("Bench press", "2026-04-14", "90x1", rpe=8.0),
+        _entry_rpe("Bench press", "2026-04-21", "95x1", rpe=9.0),
+    ]
+    metrics = compute_metrics(entries, 4)
+    flags = metrics["rpe_signals"]["fatigue_flags"]
+    bench_flags = [f for f in flags if f["lift"] == "bench"]
+    assert not bench_flags, f"unexpected fatigue flag: {bench_flags}"
+
+
+def test_pain_pattern_triggers_at_two_occurrences():
+    entries = [
+        _entry_rpe("Bench press", "2026-04-14", "80x8", pain_note="left shoulder twinge"),
+        _entry_rpe("Bench press", "2026-04-21", "80x8", pain_note="shoulder ache again"),
+    ]
+    metrics = compute_metrics(entries, 2)
+    patterns = metrics["rpe_signals"]["pain_patterns"]
+    assert any(p["body_part"] == "shoulder" for p in patterns), f"patterns: {patterns}"
+
+
+def test_pain_pattern_does_not_trigger_at_one():
+    entries = [
+        _entry_rpe("Bench press", "2026-04-14", "80x8", pain_note="knee twinge"),
+    ]
+    metrics = compute_metrics(entries, 2)
+    patterns = metrics["rpe_signals"]["pain_patterns"]
+    assert not any(p["body_part"] == "knee" for p in patterns), f"unexpected: {patterns}"
+
+
+def test_rpe_signals_empty_when_no_rpe_data():
+    """Old entries without rpe/pain_note → rpe_signals is present but empty/quiet."""
+    entries = [
+        _make_entry("Bench press", "2026-04-21", "Chest", 3, 8, "80x8", 80.0),
+    ]
+    metrics = compute_metrics(entries, 2)
+    sig = metrics["rpe_signals"]
+    assert sig["avg_rpe_by_exercise"] == {}
+    assert sig["fatigue_flags"] == []
+    assert sig["pain_patterns"] == []
+
+
+def test_format_metrics_includes_fatigue_flag():
+    """format_metrics_for_llm shows FATIGUE FLAG line when triggered."""
+    entries = [
+        _entry_rpe("Bench press", "2026-04-07", "90x1", rpe=7.0),
+        _entry_rpe("Bench press", "2026-04-14", "90x1", rpe=8.0),
+        _entry_rpe("Bench press", "2026-04-21", "90x1", rpe=9.0),
+    ]
+    metrics = compute_metrics(entries, 4)
+    out = format_metrics_for_llm(metrics)
+    assert "FATIGUE FLAG" in out or "fatigue" in out.lower(), out[-300:]
+
+
+def test_format_metrics_includes_pain_pattern():
+    """format_metrics_for_llm shows PAIN PATTERN line when ≥2 occurrences."""
+    entries = [
+        _entry_rpe("Bench press", "2026-04-14", "80x8", pain_note="shoulder pain"),
+        _entry_rpe("Bench press", "2026-04-21", "80x8", pain_note="shoulder ache"),
+    ]
+    metrics = compute_metrics(entries, 2)
+    out = format_metrics_for_llm(metrics)
+    assert "PAIN PATTERN" in out or "shoulder" in out, out[-300:]

@@ -326,6 +326,30 @@ def format_metrics_for_llm(metrics: dict) -> str:
             )
             lines.append(f"undertrained: {ut_parts}")
 
+    rpe = metrics.get("rpe_signals", {})
+    avg_rpe = rpe.get("avg_rpe_by_exercise", {})
+    fatigue_flags = rpe.get("fatigue_flags", [])
+    pain_patterns = rpe.get("pain_patterns", [])
+
+    if avg_rpe or fatigue_flags or pain_patterns:
+        lines.append("")
+        lines.append("--- RPE & Fatigue Signals ---")
+
+        if avg_rpe:
+            for ex, week_data in sorted(avg_rpe.items()):
+                weekly_str = " | ".join(f"{w}: {r}" for w, r in sorted(week_data.items()))
+                lines.append(f"  {ex} avg RPE: {weekly_str}")
+
+        for flag in fatigue_flags:
+            lines.append(
+                f"  ⚠ FATIGUE FLAG — {flag['lift']}: {flag['reason']}"
+            )
+
+        for pp in pain_patterns:
+            lines.append(
+                f"  ⚠ PAIN PATTERN — {pp['body_part']}: mentioned {pp['occurrences']}× in window"
+            )
+
     return "\n".join(lines)
 
 

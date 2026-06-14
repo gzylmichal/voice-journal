@@ -18,6 +18,8 @@ class WorkoutEntry(TypedDict, total=False):
     reps:         Optional[int]
     weight:       str           # raw weight string, e.g. "80x5, 85x3"
     top_set_kg:   Optional[float]
+    rpe:          Optional[float]  # Rate of Perceived Exertion 1–10, or None
+    pain_note:    Optional[str]    # Short pain/discomfort note, or None
 
 
 class Transcript(TypedDict, total=False):
@@ -73,6 +75,8 @@ def parse_workout_entry(page: dict) -> WorkoutEntry:
         items = p.get("rich_text", [])
         return items[0]["plain_text"] if items else ""
 
+    rpe_raw = _number(props.get("RPE", {}))
+    pain_raw = _rich_text(props.get("Pain note", {}))
     return WorkoutEntry(
         exercise=     _title(props.get("Exercise", {})),
         date=         _date(props.get("Date", {})),
@@ -82,4 +86,6 @@ def parse_workout_entry(page: dict) -> WorkoutEntry:
         reps=         _number(props.get("Reps", {})),
         weight=       _rich_text(props.get("Weight", {})),
         top_set_kg=   _number(props.get("Top Set (kg)", {})),
+        rpe=          float(rpe_raw) if rpe_raw is not None else None,
+        pain_note=    pain_raw if pain_raw else None,
     )
