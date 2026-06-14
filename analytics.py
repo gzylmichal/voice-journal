@@ -514,7 +514,7 @@ def detect_prs(entries: list[dict], window_days: int) -> dict:
 
     # Parse all entries: collect (date_obj, sets) per exercise
     # sorted ascending by date so we can build a rolling baseline
-    by_exercise: dict[str, list[tuple]] = defaultdict(list)
+    by_exercise: dict[str, list] = defaultdict(list)
     for e in entries:
         exercise = e.get("exercise", "")
         if not exercise:
@@ -537,9 +537,9 @@ def detect_prs(entries: list[dict], window_days: int) -> dict:
 
         prs: list[dict] = []
 
-        for i, (date_obj, date_str, sets) in enumerate(sessions_sorted):
+        for date_obj, date_str, sets in sessions_sorted:
             # Only PR-candidate if within the window
-            if date_obj <= cutoff:
+            if date_obj < cutoff:
                 continue
 
             # Build baseline from ALL entries BEFORE this date
@@ -550,7 +550,7 @@ def detect_prs(entries: list[dict], window_days: int) -> dict:
                 continue
 
             # --- Weight PR check ---
-            valid_sets = [(w, r) for w, r in sets if w > 0]
+            valid_sets = [(w, r) for w, r in sets if w > 0 and r > 0]
             if not valid_sets:
                 continue
 
@@ -582,9 +582,6 @@ def detect_prs(entries: list[dict], window_days: int) -> dict:
             # --- Rep PR check ---
             # For each (weight, reps) pair, check if reps > max(reps at weight >= this_weight in prior)
             for w, r in valid_sets:
-                if w <= 0 or r <= 0:
-                    continue
-
                 # Max reps seen in prior sessions at any weight >= w
                 prior_best_reps = 0
                 for _, _, prior_sets in prior_sessions:
