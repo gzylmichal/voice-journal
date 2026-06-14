@@ -83,6 +83,7 @@ _CANNED_WORKOUT = {
         "name": "Bench press", "sets": 3,
         "sets_detail": [{"reps": 8, "weight": "80 kg"}] * 3,
         "is_bodyweight": False, "added_weight_kg": None,
+        "rpe": 8.0, "pain_note": "left shoulder twinge",
     }],
 }
 
@@ -192,6 +193,16 @@ def stage_upload() -> bool:
         check("bodyweight value is 82.5 (not the bench 80!)",
               bw_payloads[0]["properties"]["Weight (kg)"]["number"] == 82.5,
               str(bw_payloads[0]["properties"]))
+
+    wk_payloads = [p for _, p in notion_posts if p.get("parent", {}).get("database_id") == "db-workout"]
+    if wk_payloads:
+        wk_props = wk_payloads[0]["properties"]
+        check("RPE written to Notion workout row",
+              wk_props.get("RPE", {}).get("number") == 8.0,
+              str(wk_props))
+        check("Pain note written to Notion workout row",
+              "left shoulder twinge" in str(wk_props.get("Pain note", "")),
+              str(wk_props))
 
     audio_archive = TMP / "archive" / "audio" / today.isoformat()
     check("audio archived", audio_archive.exists() and any(audio_archive.iterdir()))
