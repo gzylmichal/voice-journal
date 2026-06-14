@@ -6,9 +6,26 @@ Shares NOTION_API_KEY and NOTION_WORKOUT_DB_ID from cfg.
 """
 
 import logging
+import sys
+import os as _os
 import requests
 from datetime import date, datetime, timedelta
 from collections import defaultdict
+
+_ANALYTICS_DIR = _os.path.join(_os.path.dirname(__file__), '..', '..')
+
+
+def _get_detect_prs():
+    try:
+        from analytics import detect_prs
+        return detect_prs
+    except ImportError:
+        try:
+            sys.path.insert(0, _os.path.abspath(_ANALYTICS_DIR))
+            from analytics import detect_prs
+            return detect_prs
+        except ImportError:
+            return None
 
 logger = logging.getLogger("debrief.workout")
 
@@ -124,6 +141,27 @@ def _parse_entry(page: dict) -> dict:
     }
 
 
+def _format_pr_lines(prs: dict) -> str:
+    """Format PR dict (output of detect_prs) into human-readable trophy lines."""
+    if not prs:
+        return ""
+
+    lines = []
+    for exercise in sorted(prs.keys()):
+        for pr in prs[exercise]:
+            kind = pr.get("kind", "")
+            weight_kg = pr.get("weight_kg", 0)
+            reps = pr.get("reps", 0)
+            if kind == "weight":
+                prev = pr.get("prev_best_kg", 0)
+                lines.append(f"🏆 PR: {exercise} {weight_kg} kg (prev: {prev} kg)")
+            elif kind == "reps":
+                prev_reps = pr.get("prev_best_reps", 0)
+                lines.append(f"🏆 PR: {exercise} {weight_kg} kg × {reps} reps (prev: {prev_reps} reps)")
+
+    return "\n".join(lines)
+
+
 def collect_today_workout(cfg: dict) -> dict:
     """
     Fetch today's workout entries (falls back to yesterday if today has none).
@@ -160,11 +198,36 @@ def collect_today_workout(cfg: dict) -> dict:
             entries = [_parse_entry(p) for p in data.get("results", [])]
             if entries:
                 session = entries[0].get("session", "")
+
+                # Detect PRs vs prior history
+                prs = {}
+                try:
+                    detect_prs_fn = _get_detect_prs()
+                    if detect_prs_fn is not None:
+                        hist_result = collect_workout(cfg, weeks=8)
+                        all_entries = hist_result.get("entries", []) + entries
+                        prs = detect_prs_fn(all_entries, window_days=2)
+                except Exception as exc:
+                    logger.warning("PR detection failed (non-fatal): %s", exc)
+                    prs = {}
+
+                # Build formatted text with optional PR header
+                base_text = _format_for_ai(entries)
+                pr_lines = _format_pr_lines(prs)
+                if pr_lines:
+                    formatted_text = pr_lines + "\n\n" + base_text
+                else:
+                    formatted_text = base_text
+
+                pr_count = sum(len(v) for v in prs.values())
+
                 return {
                     "configured": True,
                     "entries": entries,
                     "date": target_date,
                     "session": session,
+                    "formatted_text": formatted_text,
+                    "pr_count": pr_count,
                 }
         except Exception as exc:
             logger.error("Today workout fetch failed: %s", exc)
@@ -207,7 +270,7 @@ def to_text(data: dict) -> str:
         return "[Workout DB not configured — set NOTION_WORKOUT_DB_ID]"
     if not data.get("entries"):
         return "[No workouts logged this week]"
-    return data.get("formatted_text", "")
+    return data.get("formatted_text") or _format_for_ai(data.get("entries", []))
 
 
 def generate_progress_chart(workout_data: dict) -> str:
