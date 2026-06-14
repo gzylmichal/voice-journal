@@ -5,14 +5,136 @@ Run: pytest test_analytics.py -v
 """
 
 import pytest
+from datetime import date, timedelta
 from analytics import (
     parse_sets_string,
     epley_1rm,
     linear_slope,
     identify_benchmark,
     compute_metrics,
+    recommend_progression,
 )
 from weekly_report import format_metrics_for_llm
+
+
+# ---------------------------------------------------------------------------
+# recommend_progression helpers
+# ---------------------------------------------------------------------------
+
+def _hist(exercise, days_ago_and_weights):
+    """Build history list: [(days_ago, weight_str, reps)] → list of rows."""
+    today = date.today()
+    rows = []
+    for entry in days_ago_and_weights:
+        days_ago = entry[0]
+        weight_str = entry[1]
+        reps = entry[2] if len(entry) > 2 else None
+        row = {
+            "exercise": exercise,
+            "date": (today - timedelta(days=days_ago)).isoformat(),
+            "weight": weight_str,
+        }
+        if reps is not None:
+            row["reps"] = reps
+        rows.append(row)
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# recommend_progression tests
+# ---------------------------------------------------------------------------
+
+def test_recommend_all_reps_hit_progress():
+    # 3 sessions: usual top = 8, last session all hit 8 → +2.5 kg
+    hist = _hist("Bench Press", [
+        (14, "77.5x8, 77.5x8, 77.5x8"),
+        (7,  "77.5x8, 77.5x8, 77.5x8"),
+        (0,  "77.5x8, 77.5x8, 77.5x8"),
+    ])
+    rec = recommend_progression(hist)
+    assert rec["action"] == "progress"
+    assert rec["weight_kg"] == 80.0
+
+def test_recommend_lower_body_increment():
+    # Squat: all reps hit → +5 kg increment
+    hist = _hist("Squat", [
+        (14, "100x5, 100x5, 100x5"),
+        (7,  "100x5, 100x5, 100x5"),
+        (0,  "100x5, 100x5, 100x5"),
+    ])
+    rec = recommend_progression(hist)
+    assert rec["action"] == "progress"
+    assert rec["weight_kg"] == 105.0
+
+def test_recommend_reps_missed_same_weight():
+    # Not all sets hit usual top (8) → repeat, target +1 rep on weakest set (7)
+    hist = _hist("Bench Press", [
+        (14, "80x8, 80x8, 80x8"),
+        (7,  "80x8, 80x8, 80x8"),
+        (0,  "80x8, 80x8, 80x7"),
+    ])
+    rec = recommend_progression(hist)
+    assert rec["action"] == "repeat"
+    assert rec["weight_kg"] == 80.0
+    assert rec["target_reps"] == 8   # weakest 7 → target 8
+
+def test_recommend_gap_over_14_days():
+    hist = _hist("Bench Press", [
+        (30, "80x8, 80x8, 80x8"),
+        (20, "80x8, 80x8, 80x8"),
+        (16, "80x8, 80x8, 80x8"),
+    ])
+    rec = recommend_progression(hist)
+    assert rec["action"] == "repeat"
+    assert "gap" in (rec["note"] or "")
+
+def test_recommend_bodyweight_plus_one_rep():
+    hist = _hist("Pull-ups", [
+        (14, "BW", 8),
+        (7,  "BW", 8),
+        (0,  "BW", 8),
+    ])
+    rec = recommend_progression(hist)
+    assert rec["action"] == "progress"
+    assert rec["weight_kg"] is None
+    assert rec["target_reps"] == 9
+
+def test_recommend_loaded_bodyweight():
+    hist = _hist("Pull-ups", [
+        (14, "BW + 10kg", 8),
+        (7,  "BW + 10kg", 8),
+        (0,  "BW + 10kg", 8),
+    ])
+    rec = recommend_progression(hist)
+    assert rec["action"] == "progress"
+    assert rec["weight_kg"] == 12.5  # 10 + 2.5
+
+def test_recommend_single_session_no_recommendation():
+    hist = _hist("Bench Press", [(0, "80x8, 80x8, 80x8")])
+    rec = recommend_progression(hist)
+    assert rec["action"] == "no_recommendation"
+
+def test_recommend_rpe_9_repeat():
+    hist = _hist("Bench Press", [
+        (14, "80x8, 80x8, 80x8"),
+        (7,  "80x8, 80x8, 80x8"),
+        (0,  "80x8, 80x8, 80x8"),
+    ])
+    hist[-1]["rpe"] = 9
+    rec = recommend_progression(hist)
+    assert rec["action"] == "repeat"
+    assert "RPE" in (rec["note"] or "")
+
+def test_recommend_pain_note_no_progression():
+    hist = _hist("Bench Press", [
+        (14, "80x8, 80x8, 80x8"),
+        (7,  "80x8, 80x8, 80x8"),
+        (0,  "80x8, 80x8, 80x8"),
+    ])
+    hist[-1]["pain_note"] = "shoulder twinge"
+    rec = recommend_progression(hist)
+    assert rec["action"] == "repeat"
+    assert "shoulder twinge" in (rec["note"] or "")
 
 
 def _make_entry(exercise, date, muscle_group, sets, reps, weight, top_set_kg):

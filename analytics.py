@@ -8,8 +8,8 @@ Public interface:
 """
 
 import logging
-from collections import defaultdict
-from datetime import datetime
+from collections import Counter, defaultdict
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 log = logging.getLogger("analytics")
@@ -333,6 +333,161 @@ def _compute_volume_distribution(entries: list[dict], weeks: int) -> dict:
         "pull_sets":            pull_sets,
         "push_pull_ratio":      push_pull_ratio,
         "undertrained_groups":  undertrained,
+    }
+
+
+_LOWER_BODY_KEYWORDS = ("squat", "leg press", "rdl", "romanian", "deadlift", "hip thrust")
+
+
+def _is_lower_body(name: str) -> bool:
+    n = name.lower()
+    return any(kw in n for kw in _LOWER_BODY_KEYWORDS)
+
+
+def _round_to_plate(kg: float) -> float:
+    return round(kg / 2.5) * 2.5
+
+
+def _detect_bw(weight_str: str) -> tuple[bool, float]:
+    """Return (is_bodyweight, added_kg). Parses 'BW' and 'BW + 10kg' formats."""
+    s = (weight_str or "").strip().upper()
+    if not s.startswith("BW"):
+        return False, 0.0
+    if "+" in s:
+        try:
+            added = float(s.split("+", 1)[1].replace("KG", "").replace("G", "").strip())
+        except ValueError:
+            added = 0.0
+        return True, added
+    return True, 0.0
+
+
+def recommend_progression(history: list[dict]) -> dict:
+    """Pure function: list of Notion workout rows for ONE exercise → recommendation.
+
+    Each row must have at least: date (ISO str), weight (sets str), exercise (name).
+    Optional fields checked with key-presence guard: rpe, pain_note.
+
+    Return dict keys:
+        action          "progress" | "repeat" | "no_recommendation"
+        weight_kg       float | None  (target weight; for loaded BW: added kg)
+        target_reps     int | None    (target reps for each set)
+        note            str | None    (e.g. pain note, gap note)
+        last_sets_str   str           (formatted last-session string for display)
+        last_date       str
+    """
+    _no_rec = lambda sets_str="", last_date_="", note=None: {  # noqa: E731
+        "action": "no_recommendation", "weight_kg": None,
+        "target_reps": None, "note": note,
+        "last_sets_str": sets_str, "last_date": last_date_,
+    }
+
+    if not history:
+        return _no_rec()
+
+    sorted_hist = sorted(history, key=lambda r: r.get("date") or "")
+    last = sorted_hist[-1]
+    last_date = last.get("date") or ""
+    last_weight_str = (last.get("weight") or "").strip()
+    exercise_name = last.get("exercise") or ""
+
+    # Fewer than 2 sessions → no recommendation
+    if len(sorted_hist) < 2:
+        return _no_rec(sets_str=last_weight_str, last_date_=last_date)
+
+    # Gap > 14 days → repeat last weights
+    gap_days = 0
+    try:
+        gap_days = (date.today() - datetime.fromisoformat(last_date).date()).days
+    except (ValueError, TypeError):
+        pass
+    if gap_days > 14:
+        return {
+            "action": "repeat", "weight_kg": None, "target_reps": None,
+            "note": f"({gap_days}d gap — repeat last)",
+            "last_sets_str": last_weight_str, "last_date": last_date,
+        }
+
+    # Pain note → no progression (check key presence — field doesn't exist yet in Phase H)
+    if "pain_note" in last and last.get("pain_note"):
+        return {
+            "action": "repeat", "weight_kg": None, "target_reps": None,
+            "note": f"(take it easy — {last['pain_note']})",
+            "last_sets_str": last_weight_str, "last_date": last_date,
+        }
+
+    last_rpe = last.get("rpe") if "rpe" in last else None
+
+    # Bodyweight exercise detection
+    is_bw, bw_added = _detect_bw(last_weight_str)
+    if is_bw:
+        # Reps from the Reps column (BW sets don't encode reps in weight string)
+        last_reps = int(last.get("reps") or 0)
+        if last_rpe is not None and last_rpe >= 9:
+            return {
+                "action": "repeat", "weight_kg": bw_added or None, "target_reps": last_reps,
+                "note": "RPE ≥ 9 — repeat",
+                "last_sets_str": last_weight_str, "last_date": last_date,
+            }
+        if bw_added:
+            new_added = _round_to_plate(bw_added + 2.5)
+            return {
+                "action": "progress", "weight_kg": new_added, "target_reps": last_reps,
+                "note": None, "last_sets_str": last_weight_str, "last_date": last_date,
+            }
+        # Pure BW → +1 rep
+        return {
+            "action": "progress", "weight_kg": None, "target_reps": last_reps + 1,
+            "note": None, "last_sets_str": last_weight_str, "last_date": last_date,
+        }
+
+    # Standard weighted exercise
+    last_sets = parse_sets_string(last_weight_str)
+    valid_last = [(w, r) for w, r in last_sets if w > 0 and r > 0]
+    if not valid_last:
+        return _no_rec(sets_str=last_weight_str, last_date_=last_date)
+
+    # Working weight = most frequent weight in last session
+    working_weight = Counter(w for w, r in valid_last).most_common(1)[0][0]
+    reps_at_working = [r for w, r in valid_last if w == working_weight]
+
+    # Usual top rep range = max reps seen across last 5 sessions at any weight
+    usual_top = 0
+    for row in sorted_hist[-5:]:
+        row_sets = parse_sets_string(row.get("weight") or "")
+        row_valid_reps = [r for w, r in row_sets if w > 0 and r > 0]
+        if row_valid_reps:
+            usual_top = max(usual_top, max(row_valid_reps))
+
+    if usual_top == 0:
+        usual_top = max(reps_at_working) if reps_at_working else 0
+
+    all_hit_top = bool(reps_at_working) and all(r >= usual_top for r in reps_at_working)
+
+    # RPE overrides
+    if last_rpe is not None and last_rpe >= 9:
+        return {
+            "action": "repeat", "weight_kg": working_weight,
+            "target_reps": max(reps_at_working),
+            "note": "RPE ≥ 9 — repeat",
+            "last_sets_str": last_weight_str, "last_date": last_date,
+        }
+
+    if all_hit_top or (last_rpe is not None and last_rpe <= 7):
+        increment = 5.0 if _is_lower_body(exercise_name) else 2.5
+        new_weight = _round_to_plate(working_weight + increment)
+        return {
+            "action": "progress", "weight_kg": new_weight,
+            "target_reps": usual_top,
+            "note": None, "last_sets_str": last_weight_str, "last_date": last_date,
+        }
+
+    # Reps not fully reached → same weight, target +1 on weakest set
+    weakest = min(reps_at_working)
+    return {
+        "action": "repeat", "weight_kg": working_weight,
+        "target_reps": weakest + 1,
+        "note": None, "last_sets_str": last_weight_str, "last_date": last_date,
     }
 
 
