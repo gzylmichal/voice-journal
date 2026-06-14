@@ -688,3 +688,83 @@ def test_detect_prs_no_pr():
     ]
     result = detect_prs(entries, window_days=30)
     assert result.get("Romanian deadlift", []) == []
+
+
+# ---------------------------------------------------------------------------
+# plateau_flag
+# ---------------------------------------------------------------------------
+
+def test_plateau_flag_flat_e1rm():
+    """3 bench entries across 3 different ISO weeks with identical top set → plateau flag."""
+    entries = [
+        _make_entry("Bench press", "2026-04-07", "Chest", 3, 1, "90x1, 85x3, 80x5", 90.0),
+        _make_entry("Bench press", "2026-04-14", "Chest", 3, 1, "90x1, 85x3, 80x5", 90.0),
+        _make_entry("Bench press", "2026-04-21", "Chest", 3, 1, "90x1, 85x3, 80x5", 90.0),
+    ]
+    metrics = compute_metrics(entries, 4)
+    out = format_metrics_for_llm(metrics)
+    assert "--- Plateau Alerts ---" in out
+    assert "bench" in out.split("--- Plateau Alerts ---")[1]
+
+
+def test_plateau_flag_declining_e1rm():
+    """3 bench entries with declining top sets → plateau flag."""
+    entries = [
+        _make_entry("Bench press", "2026-04-07", "Chest", 3, 1, "92.5x1, 87.5x3, 82.5x5", 92.5),
+        _make_entry("Bench press", "2026-04-14", "Chest", 3, 1, "90x1, 85x3, 80x5", 90.0),
+        _make_entry("Bench press", "2026-04-21", "Chest", 3, 1, "87.5x1, 82.5x3, 77.5x5", 87.5),
+    ]
+    metrics = compute_metrics(entries, 4)
+    out = format_metrics_for_llm(metrics)
+    assert "--- Plateau Alerts ---" in out
+    assert "bench" in out.split("--- Plateau Alerts ---")[1]
+
+
+def test_no_plateau_flag_when_rising():
+    """3 bench entries with improving top sets → NO plateau flag."""
+    entries = [
+        _make_entry("Bench press", "2026-04-07", "Chest", 3, 1, "90x1, 85x3, 80x5", 90.0),
+        _make_entry("Bench press", "2026-04-14", "Chest", 3, 1, "92.5x1, 87.5x3, 82.5x5", 92.5),
+        _make_entry("Bench press", "2026-04-21", "Chest", 3, 1, "95x1, 90x3, 85x5", 95.0),
+    ]
+    metrics = compute_metrics(entries, 4)
+    out = format_metrics_for_llm(metrics)
+    assert "--- Plateau Alerts ---" not in out
+
+
+def test_no_plateau_flag_insufficient_data():
+    """Only 2 bench entries (< 3 weeks of e1RM data) → NO plateau flag."""
+    entries = [
+        _make_entry("Bench press", "2026-04-14", "Chest", 3, 1, "90x1, 85x3, 80x5", 90.0),
+        _make_entry("Bench press", "2026-04-21", "Chest", 3, 1, "90x1, 85x3, 80x5", 90.0),
+    ]
+    metrics = compute_metrics(entries, 4)
+    out = format_metrics_for_llm(metrics)
+    assert "--- Plateau Alerts ---" not in out
+
+
+# ---------------------------------------------------------------------------
+# gap_alerts
+# ---------------------------------------------------------------------------
+
+def test_gap_alert_when_muscle_has_zero_sets():
+    """A muscle group with 0 sets logged triggers a Training Gaps alert."""
+    entries = [
+        _make_entry("Bench press",       "2026-04-21", "Chest",      5, 5, "80x5", 80.0),
+        _make_entry("Romanian deadlift", "2026-04-21", "Hamstrings", 0, 0, "",     0.0),
+    ]
+    metrics = compute_metrics(entries, 4)
+    out = format_metrics_for_llm(metrics)
+    assert "--- Training Gaps ---" in out
+    assert "hamstrings" in out.lower()
+
+
+def test_no_gap_alert_when_muscle_has_sets():
+    """All muscle groups with sets > 0 → no Training Gaps section."""
+    entries = [
+        _make_entry("Bench press", "2026-04-21", "Chest", 5, 5, "80x5",  80.0),
+        _make_entry("Squat",       "2026-04-21", "Legs",  4, 5, "100x5", 100.0),
+    ]
+    metrics = compute_metrics(entries, 4)
+    out = format_metrics_for_llm(metrics)
+    assert "--- Training Gaps ---" not in out

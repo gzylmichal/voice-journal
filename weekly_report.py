@@ -350,6 +350,50 @@ def format_metrics_for_llm(metrics: dict) -> str:
                 f"  ⚠ PAIN PATTERN — {pp['body_part']}: mentioned {pp['occurrences']}× in window"
             )
 
+    # --- Plateau Alerts ---
+    fatigue_flag_lifts = {f["lift"] for f in fatigue_flags}
+    plateau_lines = []
+    for lift in ("bench", "deadlift", "squat"):
+        sp = metrics.get("strength_progression", {}).get(lift, {})
+        weekly_e1rm = sp.get("weekly_e1rm")
+        if not weekly_e1rm or len(weekly_e1rm) < 3:
+            continue
+        last3 = weekly_e1rm[-3:]
+        w1_val = last3[0][1]
+        w3_val = last3[2][1]
+        if w3_val > w1_val:
+            # Rising — no flag
+            continue
+        vals_str = " → ".join(f"{v:.1f}" for _, v in last3) + " kg"
+        has_fatigue = lift in fatigue_flag_lifts
+        if has_fatigue:
+            suggestion = "deload recommended: −15% all weights this week, no top sets"
+            plateau_lines.append(
+                f"{lift}: fatigue plateau — e1RM stalled ({vals_str}) while RPE rising — {suggestion}"
+            )
+        else:
+            suggestion = "consider a deload: drop top set by 10%, rebuild with 5×3 for 2 weeks"
+            plateau_lines.append(
+                f"{lift}: e1RM flat for 3 weeks ({vals_str}) — {suggestion}"
+            )
+
+    if plateau_lines:
+        lines.append("")
+        lines.append("--- Plateau Alerts ---")
+        for pl in plateau_lines:
+            lines.append(pl)
+
+    # --- Training Gaps ---
+    sets_by_muscle = vol.get("sets_by_muscle_group", {}) if vol else {}
+    gap_groups = sorted(mg for mg, total in sets_by_muscle.items() if total == 0)
+    if gap_groups:
+        window_weeks = aw.get("weeks", 0)
+        window_days = window_weeks * 7
+        lines.append("")
+        lines.append("--- Training Gaps ---")
+        for mg in gap_groups:
+            lines.append(f"No direct {mg.lower()} work in {window_days} days.")
+
     return "\n".join(lines)
 
 
