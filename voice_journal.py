@@ -58,6 +58,7 @@ from pipeline.notion_client import (
     create_notion_tasks,
     create_notion_workout_entries,
     fetch_latest_bodyweight,
+    fetch_prior_workout_session,
     find_and_archive_draft,
     store_bodyweight,
     store_daily_metrics,
@@ -73,7 +74,7 @@ from pipeline.storage import (
     save_markdown,
 )
 from pipeline.lock import pipeline_lock, PipelineLocked
-from pipeline.notify import send_batch_summary
+from pipeline.notify import send_batch_summary, send_notification
 from pipeline.brief import send_preworkout_brief
 
 LOG_FILE = Path(__file__).parent / "voice_journal.log"
@@ -116,9 +117,52 @@ def validate_config():
 # Upload mode — runs immediately after each audio upload
 # ---------------------------------------------------------------------------
 
+_QUERY_ANSWER_PROMPT = """You answer a personal training-history question using ONLY the workout data provided.
+
+Rules:
+- Answer in 1-2 short lines.
+- Use ONLY the data in the <workout_rows> block. Do not invent or estimate numbers.
+- If the relevant exercise is not present in the data, say: "no records for [exercise name]".
+- Never hallucinate weights, reps, or dates.
+
+Respond with the answer only — no preamble, no commentary."""
+
+
 def _handle_query(query: dict, recording_date: "date") -> None:
     """Answer a personal training-history query and push via ntfy. Never raises."""
-    pass  # Step 3 wires this up
+    question = query.get("question") or ""
+    log.info("Query: %r — fetching workout history", question)
+
+    try:
+        history = fetch_prior_workout_session([], recording_date, lookback_days=90)
+    except Exception as exc:
+        log.error("Query: fetch_prior_workout_session failed: %s", exc)
+        history = {}
+
+    if not history:
+        answer = "no records found for your question"
+        log.info("Query: no workout history found — honest no-data answer")
+    else:
+        rows_text = "\n".join(
+            f"{ex}: " + ", ".join(
+                f"{r.get('date', '?')} {r.get('sets', '?')}x{r.get('reps', '?')} @ {r.get('weight', '?')}"
+                for r in rows
+            )
+            for ex, rows in history.items()
+        )
+        user_msg = f"Question: {question}\n\n<workout_rows>\n{rows_text}\n</workout_rows>"
+        try:
+            answer = ai_client.call_ai(
+                user_msg, _QUERY_ANSWER_PROMPT, label="Query answer", temperature=0
+            )
+        except Exception as exc:
+            log.error("Query: AI call failed: %s — not pushing", exc)
+            return  # memo already archived; no push on LLM failure
+
+    try:
+        send_notification(answer, title="Training history")
+    except Exception as exc:
+        log.warning("Query: push unexpectedly raised: %s", exc)
 
 
 def run_upload_mode():
