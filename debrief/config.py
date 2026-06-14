@@ -63,6 +63,10 @@ def load_config() -> dict:
 
         # Currency
         "currency_codes": _get("CURRENCY_CODES", default="USD,EUR,GBP,CHF").split(","),
+
+        # Task aging
+        "notion_task_db_id": _get("NOTION_TASK_DB_ID"),
+        "task_aging_days":   int(os.getenv("TASK_AGING_DAYS", "7")),
     }
 
 

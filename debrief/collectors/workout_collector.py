@@ -236,6 +236,95 @@ def collect_today_workout(cfg: dict) -> dict:
     return {"configured": True, "entries": [], "date": today}
 
 
+def collect_training_suggestion(cfg: dict) -> dict:
+    """
+    Infer the next workout in the rotation from the last ~14 days of sessions.
+
+    Returns one of:
+      {"configured": True, "suggestion": "leg day", "last_date": "Jun 7"}
+      {"configured": True, "fallback": {"Chest": 2, "Back": 5, "Legs": 9}}
+      {"configured": True}  — empty history, section omitted
+      {"configured": False}  — not configured
+    """
+    api_key = cfg.get("notion_api_key", "")
+    db_id   = cfg.get("notion_workout_db_id", "")
+
+    if not api_key or not db_id:
+        return {"configured": False}
+
+    try:
+        data = collect_workout(cfg, weeks=2)
+    except Exception as exc:
+        logger.warning("Training suggestion fetch failed (non-fatal): %s", exc)
+        return {"configured": True}
+
+    session_types: dict[str, str] = data.get("session_types", {})
+    if not session_types:
+        return {"configured": True}
+
+    # Build ordered list of (date, session) for the window
+    dated = sorted(session_types.items())  # [(date_str, session), ...]
+    sessions = [s for _, s in dated if s]
+
+    if not sessions:
+        return {"configured": True}
+
+    # Try to detect a repeating cycle (length 2–6)
+    suggestion = _infer_next_in_cycle(sessions)
+    if suggestion:
+        # Find the most recent date for the suggested session
+        last_date = ""
+        for d, s in reversed(dated):
+            if s.lower() == suggestion.lower():
+                try:
+                    last_date = datetime.fromisoformat(d).strftime("%b %-d")
+                except Exception:
+                    last_date = d
+                break
+        return {"configured": True, "suggestion": suggestion, "last_date": last_date}
+
+    # Fallback: days since each split
+    return {"configured": True, "fallback": _days_since_each_split(dated)}
+
+
+def _infer_next_in_cycle(sessions: list) -> "str | None":
+    """
+    Try cycle lengths 2–6. Return the next predicted session if the tail
+    of `sessions` matches a repeating cycle cleanly (≥2 full repeats must fit).
+    """
+    if len(sessions) < 2:
+        return None
+    for length in range(2, 7):
+        if len(sessions) < length * 2:
+            continue
+        tail = sessions[-length * 2:]
+        first_half  = tail[:length]
+        second_half = tail[length:]
+        if [s.lower() for s in first_half] == [s.lower() for s in second_half]:
+            # The cycle repeats — predict the next session after the tail
+            next_idx = len(sessions) % length
+            return sessions[-length + next_idx] if next_idx < length else second_half[0]
+    return None
+
+
+def _days_since_each_split(dated: list[tuple[str, str]]) -> dict[str, int]:
+    """Return {session_name: days_since_last} for each distinct split."""
+    from datetime import date as _date
+    today = _date.today()
+    last_seen: dict[str, str] = {}
+    for d, s in dated:
+        if s:
+            last_seen[s] = d
+    result = {}
+    for session, d in last_seen.items():
+        try:
+            delta = (today - _date.fromisoformat(d)).days
+        except Exception:
+            delta = 0
+        result[session] = delta
+    return dict(sorted(result.items(), key=lambda x: x[1]))
+
+
 def _format_for_ai(entries: list[dict]) -> str:
     """Format entries as text for the AI coaching prompt."""
     if not entries:

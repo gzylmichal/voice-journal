@@ -552,6 +552,54 @@ def render_history(history: dict) -> str:
     )
 
 
+def render_stale_tasks(data: dict) -> str:
+    if not data or not data.get("configured"):
+        return ""
+    tasks = data.get("tasks", [])
+    if not tasks:
+        return ""
+    rows = []
+    for t in tasks:
+        title = _e(t.get("title", ""))
+        age   = _e(str(t.get("age_days", "")))
+        rows.append(
+            f'<p class="t-primary" style="margin: 0 0 6px; '
+            f'font: 400 13px/1.5 {FONT}; color: {C["text_primary"]};">'
+            f'{title} '
+            f'<span class="t-secondary" style="color: {C["text_secondary"]};">'
+            f'— open {age} days. Still relevant?</span></p>'
+        )
+    return (
+        _label("Aging tasks") +
+        _card_open("margin-bottom: 20px;") +
+        "".join(rows) +
+        _card_close()
+    )
+
+
+def render_training_suggestion(data: dict) -> str:
+    if not data or not data.get("configured"):
+        return ""
+    suggestion = data.get("suggestion")
+    fallback   = data.get("fallback")
+    if not suggestion and not fallback:
+        return ""
+    if suggestion:
+        last = data.get("last_date", "")
+        last_str = f" (last: {_e(last)})" if last else ""
+        text = f"Up next by your rotation: {_e(suggestion)}{_e(last_str)}."
+    else:
+        parts = [f"{_e(k)} {_e(str(v))}d" for k, v in (fallback or {}).items()]
+        text = "Days since each split: " + " · ".join(parts)
+    return (
+        _label("Training suggestion") +
+        _card_open("margin-bottom: 20px;") +
+        f'<p class="t-primary" style="margin: 0; '
+        f'font: 400 13px/1.5 {FONT}; color: {C["text_primary"]};">{text}</p>' +
+        _card_close()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Weekly Review renderer
 # ---------------------------------------------------------------------------
@@ -782,6 +830,8 @@ def render_email(
     workout: Optional[dict] = None,
     airquality: Optional[dict] = None,
     history: Optional[dict] = None,
+    stale_tasks: Optional[dict] = None,
+    training_suggestion: Optional[dict] = None,
 ) -> str:
     """Compose the full HTML email."""
 
@@ -790,6 +840,8 @@ def render_email(
         render_weather(weather),
         render_agenda(calendar),
         render_workout(workout),
+        render_training_suggestion(training_suggestion),
+        render_stale_tasks(stale_tasks),
         render_notion(notion),
         render_markets(currency, crypto),
         render_news(news),

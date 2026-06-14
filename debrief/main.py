@@ -27,7 +27,8 @@ from collectors import notion_collector as notion_mod
 from collectors import binance_collector as binance_mod
 from collectors import airquality_collector as aqi_mod
 from collectors import history_collector as history_mod
-from collectors.workout_collector import collect_today_workout
+from collectors.workout_collector import collect_today_workout, collect_training_suggestion
+from collectors import task_collector as task_mod
 from synthesis import synthesize_tldr
 from formatter import render_email
 from sender import send_email
@@ -52,14 +53,15 @@ logger = logging.getLogger("debrief")
 # Collector registry: (name, collect_fn, to_text_fn)
 # ---------------------------------------------------------------------------
 COLLECTORS = [
-    ("weather",     weather_mod.collect_weather,     weather_mod.to_text),
-    ("calendar",    calendar_mod.collect_calendar,   calendar_mod.to_text),
-    ("notion",      notion_mod.collect_notion,       notion_mod.to_text),
-    ("news",        news_mod.collect_news,           news_mod.to_text),
-    ("currency",    currency_mod.collect_currency,   currency_mod.to_text),
-    ("crypto",      binance_mod.collect_binance,     binance_mod.to_text),
-    ("airquality",  aqi_mod.collect_airquality,      aqi_mod.to_text),
-    ("history",     history_mod.collect_history,     history_mod.to_text),
+    ("weather",             weather_mod.collect_weather,         weather_mod.to_text),
+    ("calendar",            calendar_mod.collect_calendar,       calendar_mod.to_text),
+    ("notion",              notion_mod.collect_notion,           notion_mod.to_text),
+    ("news",                news_mod.collect_news,               news_mod.to_text),
+    ("currency",            currency_mod.collect_currency,       currency_mod.to_text),
+    ("crypto",              binance_mod.collect_binance,         binance_mod.to_text),
+    ("airquality",          aqi_mod.collect_airquality,          aqi_mod.to_text),
+    ("history",             history_mod.collect_history,         history_mod.to_text),
+    ("stale_tasks",         task_mod.collect_stale_tasks,        task_mod.to_text),
 ]
 
 
@@ -116,6 +118,14 @@ def main():
         logger.warning("  ✗ workout failed: %s", exc)
         today_workout = None
 
+    logger.info("Collecting: training suggestion")
+    try:
+        training_suggestion = collect_training_suggestion(cfg)
+        logger.info("  ✓ training suggestion collected")
+    except Exception as exc:
+        logger.warning("  ✗ training suggestion failed: %s", exc)
+        training_suggestion = None
+
     results = run_collectors(cfg)
     successful = sum(1 for v in results.values() if v is not None)
     total = len(results)
@@ -155,6 +165,8 @@ def main():
         workout=today_workout,
         airquality=results.get("airquality"),
         history=results.get("history"),
+        stale_tasks=results.get("stale_tasks"),
+        training_suggestion=training_suggestion,
     )
 
     if args.preview:
