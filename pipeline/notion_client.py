@@ -2,7 +2,7 @@
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import requests
 
@@ -17,6 +17,7 @@ from pipeline.config import (
     NOTION_WORKOUT_DB_ID,
 )
 from pipeline.extractors import _sets_detail_summary, extract_top_weight, infer_muscle_group
+from models import parse_workout_entry
 
 log = logging.getLogger(__name__)
 
@@ -417,6 +418,94 @@ def fetch_latest_bodyweight(before_date: date) -> Optional[float]:
     except Exception as e:
         log.error(f"Failed to fetch latest bodyweight: {e}")
         return None
+
+
+def fetch_prior_workout_session(
+    today_exercises: List[str],
+    before_date: date,
+    lookback_days: int = 90,
+) -> Dict[str, List[dict]]:
+    """Return prior Notion workout rows for comparison in the pre-workout brief.
+
+    Finds the most recent workout date (strictly before before_date) that shares
+    at least one exercise with today_exercises. Falls back to the most recent
+    workout day when there is no exercise overlap.
+
+    Returns dict mapping exercise_name → list of all history rows for that exercise
+    (sorted ascending by date), or {} on missing config / API error.
+    """
+    if not NOTION_TOKEN or not NOTION_WORKOUT_DB_ID:
+        log.info("NOTION_WORKOUT_DB_ID not configured — skipping comparison fetch")
+        return {}
+
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION,
+    }
+    cutoff = (before_date - timedelta(days=lookback_days)).isoformat()
+    url = f"https://api.notion.com/v1/databases/{NOTION_WORKOUT_DB_ID}/query"
+    payload = {
+        "filter": {
+            "and": [
+                {"property": "Date", "date": {"on_or_after": cutoff}},
+                {"property": "Date", "date": {"before": before_date.isoformat()}},
+            ]
+        },
+        "sorts": [{"property": "Date", "direction": "descending"}],
+        "page_size": 200,
+    }
+
+    try:
+        pages: List[dict] = []
+        while True:
+            resp = requests.post(url, headers=headers, json=payload, timeout=20)
+            if resp.status_code != 200:
+                log.warning("Workout DB fetch error %s: %s", resp.status_code, resp.text[:200])
+                return {}
+            data = resp.json()
+            pages.extend(data.get("results", []))
+            if data.get("has_more"):
+                payload["start_cursor"] = data["next_cursor"]
+            else:
+                break
+    except Exception as exc:
+        log.warning("fetch_prior_workout_session failed: %s", exc)
+        return {}
+
+    if not pages:
+        return {}
+
+    entries = [parse_workout_entry(p) for p in pages]
+    # entries are sorted descending by date
+
+    today_lower = {n.lower() for n in today_exercises}
+
+    # Find most recent date that overlaps with today's exercises
+    overlap_date: Optional[str] = None
+    for entry in entries:
+        if entry.get("exercise", "").lower() in today_lower:
+            overlap_date = entry.get("date")
+            break
+
+    # Fall back to most recent workout day if no overlap found
+    comparison_date = overlap_date or (entries[0].get("date") if entries else None)
+    if not comparison_date:
+        return {}
+
+    # Collect all history rows per exercise (ascending) for recommend_progression
+    history_by_exercise: Dict[str, List[dict]] = {}
+    for entry in reversed(entries):  # ascending now
+        name = entry.get("exercise") or ""
+        if not name:
+            continue
+        history_by_exercise.setdefault(name, []).append(dict(entry))
+
+    log.info(
+        "Comparison session: %s (overlap=%s, %d exercises in history)",
+        comparison_date, bool(overlap_date), len(history_by_exercise),
+    )
+    return history_by_exercise
 
 
 def fetch_bodyweight_entries(weeks: int) -> List[Tuple[str, float]]:
