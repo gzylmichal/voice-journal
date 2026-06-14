@@ -89,7 +89,7 @@ except ImportError:
     _ANALYTICS_AVAILABLE = False
 
 from models import parse_workout_entry
-from pipeline.notion_client import fetch_bodyweight_entries
+from pipeline.notion_client import fetch_bodyweight_entries, fetch_metrics_entries
 
 
 # ---------------------------------------------------------------------------
@@ -1347,6 +1347,80 @@ def send_weekly_email(
 
 
 # ---------------------------------------------------------------------------
+# Sleep/energy correlation helpers
+# ---------------------------------------------------------------------------
+
+def compute_sleep_workout_correlation(metrics_entries: list, workout_entries: list) -> str:
+    """
+    Return a correlation line if ≥3 bad-sleep days also have workout data.
+    Compares average top-set weight on bad-sleep days vs the overall average.
+
+    Returns empty string when not enough data or metrics DB not configured.
+    """
+    if not metrics_entries or not workout_entries:
+        return ""
+
+    # Build {date: "bad"|"ok"|"good"} from metrics
+    sleep_by_date: dict = {}
+    for m in metrics_entries:
+        if m.get("sleep") and m.get("date"):
+            sleep_by_date[m["date"]] = m["sleep"]
+
+    bad_sleep_dates = {d for d, s in sleep_by_date.items() if s == "bad"}
+    if not bad_sleep_dates:
+        return ""
+
+    # Build {date: [top_set_kg]} from workout entries
+    tops_by_date: dict = {}
+    for e in workout_entries:
+        d = e.get("date", "")[:10]
+        top = e.get("top_set_kg")
+        if d and top is not None:
+            tops_by_date.setdefault(d, []).append(float(top))
+
+    # Bad-sleep days that also have workout data
+    bad_with_workout = [d for d in bad_sleep_dates if d in tops_by_date]
+    if len(bad_with_workout) < 3:
+        return ""
+
+    all_tops = [t for tops in tops_by_date.values() for t in tops]
+    if not all_tops:
+        return ""
+
+    avg_all = sum(all_tops) / len(all_tops)
+    bad_tops = [t for d in bad_with_workout for t in tops_by_date[d]]
+    avg_bad = sum(bad_tops) / len(bad_tops)
+
+    if avg_all == 0:
+        return ""
+
+    pct_diff = (avg_bad - avg_all) / avg_all * 100
+    sign = "+" if pct_diff >= 0 else ""
+    return f"Top sets on bad-sleep days: {sign}{pct_diff:.0f}% vs your average."
+
+
+def build_sleep_energy_summary(metrics_entries: list, weeks: int) -> str:
+    """Build a one-line sleep/energy snapshot for the weekly report prompt."""
+    if not metrics_entries:
+        return ""
+    sleep_counts: dict = {}
+    energy_counts: dict = {}
+    for m in metrics_entries:
+        if m.get("sleep"):
+            sleep_counts[m["sleep"]] = sleep_counts.get(m["sleep"], 0) + 1
+        if m.get("energy"):
+            energy_counts[m["energy"]] = energy_counts.get(m["energy"], 0) + 1
+    if not sleep_counts and not energy_counts:
+        return ""
+    parts = []
+    if sleep_counts:
+        parts.append("Sleep: " + " | ".join(f"{k} {v}d" for k, v in sorted(sleep_counts.items())))
+    if energy_counts:
+        parts.append("Energy: " + " | ".join(f"{k} {v}d" for k, v in sorted(energy_counts.items())))
+    return f"\n\n## Sleep / Energy (last {weeks} weeks)\n" + " · ".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1470,7 +1544,24 @@ def main():
             f"Based on this split, suggest specific focus areas for the upcoming week's training."
         )
 
-    workout_section += bw_prompt_section + muscle_prompt_section
+    # Sleep/energy metrics
+    metrics_entries: list = []
+    sleep_correlation_line = ""
+    sleep_energy_section = ""
+    try:
+        metrics_entries = fetch_metrics_entries(args.weeks)
+        if metrics_entries:
+            log.info(f"Metrics: {len(metrics_entries)} daily metrics row(s)")
+            sleep_correlation_line = compute_sleep_workout_correlation(metrics_entries, entries)
+            sleep_energy_section   = build_sleep_energy_summary(metrics_entries, args.weeks)
+            if sleep_correlation_line:
+                log.info(f"Sleep correlation: {sleep_correlation_line}")
+    except Exception as exc:
+        log.warning(f"Metrics fetch failed (non-fatal): {exc}")
+
+    workout_section += bw_prompt_section + muscle_prompt_section + sleep_energy_section
+    if sleep_correlation_line:
+        workout_section += f"\n\n{sleep_correlation_line}"
 
     if journal_entries:
         journal_section = f"\n\n## Daily Journal Entries (last {args.weeks} weeks)\n"
