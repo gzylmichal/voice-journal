@@ -92,6 +92,10 @@ def create_notion_workout_entries(workout: dict, recording_date: date, resolved_
             properties["Weight"] = {"rich_text": [{"text": {"content": weight_str[:2000]}}]}
         if top_weight is not None:
             properties["Top Set (kg)"] = {"number": top_weight}
+        if ex.get("rpe") is not None:
+            properties["RPE"] = {"number": float(ex["rpe"])}
+        if ex.get("pain_note"):
+            properties["Pain note"] = {"rich_text": [{"text": {"content": ex["pain_note"][:2000]}}]}
 
         payload = {
             "parent": {"database_id": NOTION_WORKOUT_DB_ID},
