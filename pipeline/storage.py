@@ -137,10 +137,12 @@ def append_to_buffer(
             "tasks":                 extracted.get("tasks", []),
             "events":                extracted.get("events", []),
             "bodyweight":            extracted.get("bodyweight"),
+            "metrics":               extracted.get("metrics"),
             "workout_written_at":    None,
             "tasks_written_at":      None,
             "events_written_at":     None,
             "bodyweight_written_at": None,
+            "metrics_written_at":    None,
         })
 
     path = get_buffer_path(d)
@@ -154,7 +156,7 @@ def append_to_buffer(
 def mark_written(d: date, batch_id: str, resource: str):
     """Mark a specific resource as written for a pending buffer entry.
 
-    resource must be one of: 'workout', 'tasks', 'events', 'bodyweight'.
+    resource must be one of: 'workout', 'tasks', 'events', 'bodyweight', 'metrics'.
     No-op if batch_id not found or buffer file doesn't exist.
     """
     path = get_buffer_path(d)

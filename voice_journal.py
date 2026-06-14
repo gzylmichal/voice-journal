@@ -38,6 +38,7 @@ from pipeline.config import (
     INBOX_DIR,
     NOTION_BODYWEIGHT_DB_ID,
     NOTION_ENABLED,
+    NOTION_METRICS_DB_ID,
     NOTION_TASK_DB_ID,
     NOTION_WORKOUT_DB_ID,
 )
@@ -59,6 +60,7 @@ from pipeline.notion_client import (
     fetch_latest_bodyweight,
     find_and_archive_draft,
     store_bodyweight,
+    store_daily_metrics,
     upload_to_notion,
 )
 from pipeline.gcal_client import create_gcal_events
@@ -187,11 +189,13 @@ def _run_upload_locked():
     except Exception as exc:
         log.warning("send_preworkout_brief raised unexpectedly: %s", exc)
 
+    metrics = extracted.get("metrics") or {}
+
     # Buffer non-empty transcripts + extracted data — data is safe from here on
     batch_id = append_to_buffer(
         non_empty,
         recording_date,
-        extracted={"workout": workout, "tasks": tasks, "events": cal_events, "bodyweight": bodyweight},
+        extracted={"workout": workout, "tasks": tasks, "events": cal_events, "bodyweight": bodyweight, "metrics": metrics},
     )
 
     # Resolve bodyweight once for the entire batch
@@ -234,6 +238,20 @@ def _run_upload_locked():
         log.info("No calendar events detected")
         if batch_id:
             mark_written(recording_date, batch_id, "events")
+
+    # Write daily metrics — once per day; first batch with a detection wins
+    if (metrics.get("sleep") or metrics.get("energy")) and NOTION_METRICS_DB_ID and batch_id:
+        # Check if metrics already written today (first-wins)
+        _, prior = load_buffer(recording_date)
+        already_written = any(
+            e.get("metrics_written_at") is not None
+            for e in prior
+            if e.get("batch_id") != batch_id
+        )
+        if not already_written:
+            ok = store_daily_metrics(metrics, recording_date)
+            if ok:
+                mark_written(recording_date, batch_id, "metrics")
 
     archive_files(files, recording_date, transcripts=successful)
 
@@ -331,6 +349,22 @@ def _run_overnight_locked():
                 log.info(f"Retry bodyweight write (batch {batch_id}): {'ok' if ok else 'failed'}")
             else:
                 log.warning(f"Retry bodyweight {bw['weight_kg']:.1f} kg failed validation — not stored (batch {batch_id})")
+
+        mx = entry.get("metrics") or {}
+        if (entry.get("metrics_written_at") is None
+                and (mx.get("sleep") or mx.get("energy"))
+                and NOTION_METRICS_DB_ID):
+            # Only retry if no other entry already wrote metrics today
+            already_written = any(
+                e.get("metrics_written_at") is not None
+                for e in pending_writes
+                if e.get("batch_id") != batch_id
+            )
+            if not already_written:
+                ok = store_daily_metrics(mx, recording_date)
+                if ok:
+                    mark_written(recording_date, batch_id, "metrics")
+                log.info(f"Retry metrics write (batch {batch_id}): {'ok' if ok else 'failed'}")
 
     journal_md = format_journal_entry(groq_client, transcripts, recording_date)
 
