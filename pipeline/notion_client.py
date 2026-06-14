@@ -11,6 +11,7 @@ from pipeline.config import (
     NOTION_BODYWEIGHT_DB_ID,
     NOTION_DATABASE_ID,
     NOTION_ENABLED,
+    NOTION_METRICS_DB_ID,
     NOTION_TASK_DB_ID,
     NOTION_TOKEN,
     NOTION_VERSION,
@@ -391,6 +392,94 @@ def store_bodyweight(weight_kg: float, recording_date: date) -> bool:
     except Exception as e:
         log.error(f"Failed to store bodyweight: {e}")
         return False
+
+
+def store_daily_metrics(metrics: dict, recording_date: date) -> bool:
+    """Write a daily metrics row to the Notion Daily Metrics DB. Returns True on success.
+
+    Skips silently when NOTION_METRICS_DB_ID is not configured.
+    Only sets Sleep/Energy/Note when the value is non-null.
+    """
+    if not NOTION_TOKEN or not NOTION_METRICS_DB_ID:
+        log.info("NOTION_METRICS_DB_ID not set — skipping daily metrics write")
+        return False
+
+    date_str = recording_date.isoformat()
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION,
+    }
+    properties: dict = {
+        "Name": {"title": [{"text": {"content": date_str}}]},
+        "Date": {"date": {"start": date_str}},
+    }
+    if metrics.get("sleep"):
+        properties["Sleep"] = {"select": {"name": metrics["sleep"]}}
+    if metrics.get("energy"):
+        properties["Energy"] = {"select": {"name": metrics["energy"]}}
+    if metrics.get("note"):
+        properties["Note"] = {"rich_text": [{"text": {"content": metrics["note"]}}]}
+
+    payload = {
+        "parent": {"database_id": NOTION_METRICS_DB_ID},
+        "properties": properties,
+    }
+    try:
+        resp = requests.post(NOTION_API_URL, headers=headers, json=payload, timeout=30)
+        if resp.status_code == 200:
+            log.info(f"Daily metrics stored: sleep={metrics.get('sleep')} energy={metrics.get('energy')} on {date_str}")
+            return True
+        log.error(f"Metrics DB error {resp.status_code}: {resp.text[:300]}")
+        return False
+    except Exception as e:
+        log.error(f"Failed to store daily metrics: {e}")
+        return False
+
+
+def fetch_metrics_entries(weeks: int) -> list:
+    """Fetch daily metrics rows from Notion for the last N weeks.
+
+    Returns list of {date, sleep, energy, note} dicts. Empty list when not configured.
+    """
+    if not NOTION_TOKEN or not NOTION_METRICS_DB_ID:
+        return []
+
+    from datetime import timedelta
+    since = (date.today() - timedelta(weeks=weeks)).isoformat()
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION,
+    }
+    url = f"https://api.notion.com/v1/databases/{NOTION_METRICS_DB_ID}/query"
+    payload = {
+        "filter": {"property": "Date", "date": {"on_or_after": since}},
+        "sorts": [{"property": "Date", "direction": "ascending"}],
+        "page_size": 100,
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        if resp.status_code != 200:
+            log.error(f"Metrics fetch error {resp.status_code}: {resp.text[:200]}")
+            return []
+        results = []
+        for page in resp.json().get("results", []):
+            props = page.get("properties", {})
+            date_val = (props.get("Date", {}).get("date") or {}).get("start", "")
+            sleep_sel = props.get("Sleep", {}).get("select") or {}
+            energy_sel = props.get("Energy", {}).get("select") or {}
+            note_rt = props.get("Note", {}).get("rich_text") or []
+            results.append({
+                "date":   date_val,
+                "sleep":  sleep_sel.get("name"),
+                "energy": energy_sel.get("name"),
+                "note":   note_rt[0]["plain_text"] if note_rt else None,
+            })
+        return results
+    except Exception as e:
+        log.error(f"Failed to fetch metrics entries: {e}")
+        return []
 
 
 def fetch_latest_bodyweight(before_date: date) -> Optional[float]:

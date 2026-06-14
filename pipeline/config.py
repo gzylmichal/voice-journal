@@ -36,6 +36,7 @@ NOTION_WORKOUT_DB_ID   = os.getenv("NOTION_WORKOUT_DB_ID", "")
 NOTION_TASK_DB_ID      = os.getenv("NOTION_TASK_DB_ID", "")
 NOTION_TRAINER_PAGE_ID = os.getenv("NOTION_TRAINER_PAGE_ID", "")
 NOTION_BODYWEIGHT_DB_ID = os.getenv("NOTION_BODYWEIGHT_DB_ID", "")
+NOTION_METRICS_DB_ID    = os.getenv("NOTION_METRICS_DB_ID", "")
 NOTION_ENABLED         = bool(NOTION_TOKEN and NOTION_DATABASE_ID)
 NOTION_API_URL         = "https://api.notion.com/v1/pages"
 NOTION_VERSION         = "2022-06-28"
