@@ -116,6 +116,11 @@ def validate_config():
 # Upload mode — runs immediately after each audio upload
 # ---------------------------------------------------------------------------
 
+def _handle_query(query: dict, recording_date: "date") -> None:
+    """Answer a personal training-history query and push via ntfy. Never raises."""
+    pass  # Step 3 wires this up
+
+
 def run_upload_mode():
     """
     Triggered immediately after each audio upload (by iOS Shortcut or receiver.py).
@@ -175,8 +180,17 @@ def _run_upload_locked():
         archive_files(files, recording_date, transcripts=successful)
         return
 
-    # Extract structured data from this batch — single LLM call for all four categories
+    # Extract structured data from this batch — single LLM call for all categories
     extracted  = extract_all(non_empty, recording_date)
+    query      = extracted.get("query") or {}
+
+    # Query path: memo is a personal training-history lookup — isolate from journal
+    if query.get("detected"):
+        log.info("Query memo detected — skipping journal buffer and Notion writes")
+        archive_files(files, recording_date, transcripts=successful)
+        _handle_query(query, recording_date)
+        return
+
     workout    = extracted["workout"]
     tasks      = extracted["tasks"] if NOTION_ENABLED else []
     cal_events = extracted["events"] if GCAL_ENABLED else []

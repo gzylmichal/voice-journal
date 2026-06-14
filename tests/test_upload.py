@@ -122,3 +122,114 @@ def test_mixed_only_nonempty_buffered(tmp_path):
 
     # archive was still called (all audio archived)
     mock_arc.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Phase M Step 2: query memo isolation
+# ---------------------------------------------------------------------------
+
+def _query_extracted():
+    return {
+        "workout": {"detected": False, "workout_name": None, "exercises": []},
+        "tasks": [],
+        "events": [],
+        "bodyweight": {"detected": False},
+        "metrics": {"sleep": None, "energy": None, "note": None},
+        "query": {"detected": True, "question": "What did I squat last time?"},
+    }
+
+
+def _normal_extracted():
+    return {
+        "workout": {"detected": False},
+        "tasks": [],
+        "events": [],
+        "bodyweight": {"detected": False},
+        "metrics": {"sleep": None, "energy": None, "note": None},
+        "query": {"detected": False, "question": None},
+    }
+
+
+def test_query_memo_does_not_call_append_to_buffer(tmp_path):
+    """When query.detected is True, the memo must NOT be appended to the buffer."""
+    import voice_journal
+
+    fake_file = tmp_path / "memo.m4a"
+    fake_file.write_bytes(b"audio")
+
+    with patch("voice_journal.BUFFER_DIR", tmp_path), \
+         patch("voice_journal.INBOX_DIR", tmp_path / "inbox"), \
+         patch("voice_journal.ARCHIVE_AUDIO_DIR", tmp_path / "archive" / "audio"), \
+         patch("voice_journal.get_inbox_files", return_value=[fake_file]), \
+         patch("voice_journal.transcribe_file", return_value=_good_transcript()), \
+         patch("voice_journal.Groq"), \
+         patch("voice_journal.GROQ_API_KEY", "test"), \
+         patch("voice_journal.extract_all", return_value=_query_extracted()), \
+         patch("voice_journal.append_to_buffer") as mock_buf, \
+         patch("voice_journal.archive_files") as mock_arc, \
+         patch("voice_journal._handle_query") as mock_hq:
+        voice_journal.run_upload_mode()
+
+    mock_buf.assert_not_called()
+    mock_arc.assert_called_once()  # audio still archived
+    mock_hq.assert_called_once()
+
+
+def test_query_memo_does_not_write_notion(tmp_path):
+    """When query.detected is True, no workout/task/event/bodyweight writes to Notion."""
+    import voice_journal
+
+    fake_file = tmp_path / "memo.m4a"
+    fake_file.write_bytes(b"audio")
+
+    with patch("voice_journal.BUFFER_DIR", tmp_path), \
+         patch("voice_journal.INBOX_DIR", tmp_path / "inbox"), \
+         patch("voice_journal.ARCHIVE_AUDIO_DIR", tmp_path / "archive" / "audio"), \
+         patch("voice_journal.get_inbox_files", return_value=[fake_file]), \
+         patch("voice_journal.transcribe_file", return_value=_good_transcript()), \
+         patch("voice_journal.Groq"), \
+         patch("voice_journal.GROQ_API_KEY", "test"), \
+         patch("voice_journal.extract_all", return_value=_query_extracted()), \
+         patch("voice_journal.append_to_buffer") as mock_buf, \
+         patch("voice_journal.archive_files"), \
+         patch("voice_journal.create_notion_workout_entries") as mock_wk, \
+         patch("voice_journal.create_notion_tasks") as mock_tasks, \
+         patch("voice_journal.create_gcal_events") as mock_gcal, \
+         patch("voice_journal.store_bodyweight") as mock_bw, \
+         patch("voice_journal._handle_query"):
+        voice_journal.run_upload_mode()
+
+    mock_buf.assert_not_called()
+    mock_wk.assert_not_called()
+    mock_tasks.assert_not_called()
+    mock_gcal.assert_not_called()
+    mock_bw.assert_not_called()
+
+
+def test_normal_memo_still_calls_append_to_buffer(tmp_path):
+    """A non-query batch is completely unchanged — buffer is still written."""
+    import voice_journal
+
+    fake_file = tmp_path / "memo.m4a"
+    fake_file.write_bytes(b"audio")
+
+    with patch("voice_journal.BUFFER_DIR", tmp_path), \
+         patch("voice_journal.INBOX_DIR", tmp_path / "inbox"), \
+         patch("voice_journal.ARCHIVE_AUDIO_DIR", tmp_path / "archive" / "audio"), \
+         patch("voice_journal.get_inbox_files", return_value=[fake_file]), \
+         patch("voice_journal.transcribe_file", return_value=_good_transcript()), \
+         patch("voice_journal.Groq"), \
+         patch("voice_journal.GROQ_API_KEY", "test"), \
+         patch("voice_journal.extract_all", return_value=_normal_extracted()), \
+         patch("voice_journal.append_to_buffer") as mock_buf, \
+         patch("voice_journal.archive_files"), \
+         patch("voice_journal.send_preworkout_brief"), \
+         patch("voice_journal.send_batch_summary"), \
+         patch("voice_journal.load_buffer", return_value=([], [])), \
+         patch("voice_journal.fetch_latest_bodyweight", return_value=None), \
+         patch("voice_journal.NOTION_ENABLED", False), \
+         patch("voice_journal.GCAL_ENABLED", False), \
+         patch("voice_journal.NOTION_BODYWEIGHT_DB_ID", ""):
+        voice_journal.run_upload_mode()
+
+    mock_buf.assert_called_once()
