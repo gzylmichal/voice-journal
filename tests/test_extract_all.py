@@ -29,6 +29,7 @@ _FULL_RESPONSE = {
     "events": [{"title": "Doctor", "date": "2026-05-21", "time": "10:00", "duration_minutes": None, "notes": None}],
     "bodyweight": {"detected": True, "weight_kg": 82.5},
     "metrics": {"sleep": "good", "energy": "high", "note": None},
+    "query": {"detected": False, "question": None},
 }
 
 
@@ -143,6 +144,7 @@ def test_extract_all_empty_transcripts_skips_llm():
         "events": [],
         "bodyweight": {"detected": False},
         "metrics": {"sleep": None, "energy": None, "note": None},
+        "query": {"detected": False, "question": None},
     }
 
 
@@ -268,3 +270,53 @@ def test_metrics_empty_transcripts_returns_null():
         result = extract_all([], _DATE)
     mock_ai.assert_not_called()
     assert result["metrics"] == {"sleep": None, "energy": None, "note": None}
+
+
+# ---------------------------------------------------------------------------
+# Phase M: query key — history lookups
+# ---------------------------------------------------------------------------
+
+_QUERY_RESPONSE = {
+    "workout": {"detected": False, "workout_name": None, "exercises": []},
+    "tasks": [],
+    "events": [],
+    "bodyweight": {"detected": False},
+    "metrics": {"sleep": None, "energy": None, "note": None},
+    "query": {"detected": True, "question": "What did I squat last time?"},
+}
+
+
+def test_query_detected_passes_through():
+    """A query-detected response is returned with query.detected=True and the question text."""
+    with patch("ai_client.call_ai", return_value=json.dumps(_QUERY_RESPONSE)):
+        result = extract_all(_transcripts("What did I squat last time?"), _DATE)
+    assert result["query"]["detected"] is True
+    assert result["query"]["question"] == "What did I squat last time?"
+
+
+def test_query_not_detected_defaults_to_false():
+    """Regular memos return query.detected=False."""
+    with patch("ai_client.call_ai", return_value=json.dumps(_FULL_RESPONSE)):
+        result = extract_all(
+            _transcripts("Bench press 80 kg. I weighed myself, 82.5 kg. Slept well."),
+            _DATE,
+        )
+    assert result["query"]["detected"] is False
+    assert result["query"]["question"] is None
+
+
+def test_query_missing_from_response_defaults_to_false():
+    """AI response missing 'query' key → safe default detected: false."""
+    no_query = {k: v for k, v in _FULL_RESPONSE.items() if k != "query"}
+    with patch("ai_client.call_ai", return_value=json.dumps(no_query)):
+        result = extract_all(_transcripts("Slept well. I weigh 82.5 kg."), _DATE)
+    assert result["query"] == {"detected": False, "question": None}
+
+
+def test_query_invalid_detected_field_coerced_to_false():
+    """If 'detected' is not a bool, query defaults to false."""
+    bad = dict(_FULL_RESPONSE)
+    bad["query"] = {"detected": "yes", "question": "something"}
+    with patch("ai_client.call_ai", return_value=json.dumps(bad)):
+        result = extract_all(_transcripts("Slept well. I weigh 82.5 kg."), _DATE)
+    assert result["query"]["detected"] is False

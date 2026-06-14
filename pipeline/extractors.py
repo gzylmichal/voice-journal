@@ -127,6 +127,9 @@ def _parse_json_response(raw: str):
 _NULL_METRICS = {"sleep": None, "energy": None, "note": None}
 
 
+_NULL_QUERY = {"detected": False, "question": None}
+
+
 def _empty_extraction() -> dict:
     return {
         "workout": {"detected": False, "exercises": []},
@@ -134,6 +137,7 @@ def _empty_extraction() -> dict:
         "events": [],
         "bodyweight": {"detected": False},
         "metrics": dict(_NULL_METRICS),
+        "query": dict(_NULL_QUERY),
     }
 
 
@@ -172,6 +176,7 @@ def extract_all(transcripts: List[dict], recording_date: date) -> dict:
         events = result.get("events") or []
         bodyweight = result.get("bodyweight") or {"detected": False}
         metrics = result.get("metrics") or dict(_NULL_METRICS)
+        query = result.get("query") or dict(_NULL_QUERY)
 
         if not isinstance(tasks, list):
             tasks = []
@@ -181,6 +186,10 @@ def extract_all(transcripts: List[dict], recording_date: date) -> dict:
             bodyweight = {"detected": False}
         if not isinstance(metrics, dict):
             metrics = dict(_NULL_METRICS)
+        if not isinstance(query, dict):
+            query = dict(_NULL_QUERY)
+        if not isinstance(query.get("detected"), bool):
+            query = dict(_NULL_QUERY)
 
         # A1 bodyweight keyword pre-filter applied post-hoc
         if not has_weigh_in:
@@ -210,8 +219,10 @@ def extract_all(transcripts: List[dict], recording_date: date) -> dict:
             log.info(f"Events: {len(events)} found")
         if metrics.get("sleep") or metrics.get("energy"):
             log.info(f"Metrics: sleep={metrics.get('sleep')} energy={metrics.get('energy')}")
+        if query.get("detected"):
+            log.info(f"Query detected: {query.get('question')!r}")
 
-        return {"workout": workout, "tasks": tasks, "events": events, "bodyweight": bodyweight, "metrics": metrics}
+        return {"workout": workout, "tasks": tasks, "events": events, "bodyweight": bodyweight, "metrics": metrics, "query": query}
 
     except json.JSONDecodeError as e:
         log.error(f"Unified extraction: JSON parse failed: {e}")

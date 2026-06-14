@@ -93,5 +93,24 @@ def test_extraction_prompt_metrics_qualitative_only():
            "never extract" in EXTRACTION_SYSTEM_PROMPT.lower() or \
            "STRICTLY qualitative" in EXTRACTION_SYSTEM_PROMPT
 
-def test_extraction_prompt_five_keys():
-    assert "five keys" in EXTRACTION_SYSTEM_PROMPT
+def test_extraction_prompt_six_keys():
+    assert "six keys" in EXTRACTION_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Phase M: query key in extraction prompt
+# ---------------------------------------------------------------------------
+
+def test_extraction_prompt_has_query_key():
+    assert '"query"' in EXTRACTION_SYSTEM_PROMPT
+
+def test_extraction_prompt_query_has_detected_and_question():
+    assert '"detected"' in EXTRACTION_SYSTEM_PROMPT
+    assert '"question"' in EXTRACTION_SYSTEM_PROMPT
+
+def test_extraction_prompt_query_polish_cues():
+    assert "co ostatnio" in EXTRACTION_SYSTEM_PROMPT or "ostatnio wyciskałem" in EXTRACTION_SYSTEM_PROMPT
+
+def test_extraction_prompt_query_isolation_rule():
+    # Must state that a query memo should NOT populate other keys
+    assert "do NOT" in EXTRACTION_SYSTEM_PROMPT or "ONLY a question" in EXTRACTION_SYSTEM_PROMPT

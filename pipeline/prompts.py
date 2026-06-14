@@ -147,7 +147,7 @@ EXTRACTION_SYSTEM_PROMPT = """You extract structured data from voice memo transc
 The speaker records memos in English, Polish, or a mix of both — this is intentional.
 Recording date is provided in the user message.
 
-Return a single JSON object with exactly five keys: "workout", "tasks", "events", "bodyweight", "metrics".
+Return a single JSON object with exactly six keys: "workout", "tasks", "events", "bodyweight", "metrics", "query".
 
 ## workout
 Extract workout data. Return an object with:
@@ -235,13 +235,36 @@ Rules:
   "slept ok, not great not terrible" → "ok"
 - If no clear sleep/energy cue: {"sleep": null, "energy": null, "note": null}
 
+## query
+Detect whether the memo is a direct personal history lookup — the speaker asking about their OWN
+past training data. Return an object with:
+- "detected": true if the memo is a history question, false otherwise
+- "question": the question text (string) if detected, or null
+
+Positive cues (EN + PL — the speaker asking about their OWN history):
+- "what did I squat last time?" / "co ostatnio robiłem na squat?"
+- "what did I bench last session?" / "ile ostatnio wyciskałem na klatę?"
+- "how much did I do on OHP?" / "ile robiłem na OHP?"
+- "what weight was I using for rows?" / "ile miałem na wiosłowaniu?"
+- "what were my pull-up numbers?" / "jakie miałem wyniki na podciąganiu?"
+
+Negative cues — ALWAYS return detected: false for these:
+- Rhetorical or journal questions: "why am I so tired today?", "dlaczego jestem taki zmęczony?"
+- Future plans: "I should try squatting more", "powinienem zacząć więcej przysiadów"
+- General workout memos: any memo recording a set, exercise, or weight performed now
+- Tasks or events: anything that is an action item or calendar appointment
+
+CRITICAL isolation rule: if detected is true, the memo is ONLY a question — do NOT also
+populate workout, tasks, events, bodyweight, or metrics from it. Leave all other keys
+at their empty defaults.
+
 ## Cross-cutting rule
 Each number belongs to exactly one category. A weight spoken in an exercise context (bench press,
 squat, deadlift, dumbbell, "x reps", sets, series, powtórzenia, serie) is NEVER the speaker's
 bodyweight. When in doubt, classify a number as an exercise weight, not bodyweight.
 
 Output ONLY valid JSON in this exact shape:
-{"workout": {...}, "tasks": [...], "events": [...], "bodyweight": {...}, "metrics": {"sleep": null, "energy": null, "note": null}}
+{"workout": {...}, "tasks": [...], "events": [...], "bodyweight": {...}, "metrics": {"sleep": null, "energy": null, "note": null}, "query": {"detected": false, "question": null}}
 No preamble, no markdown fences, no commentary."""
 
 
