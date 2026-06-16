@@ -8,6 +8,7 @@ Public interface:
 """
 
 import logging
+import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -703,6 +704,56 @@ def _compute_rpe_signals(entries: list[dict], strength_progression: dict) -> dic
         "fatigue_flags":       fatigue_flags,
         "pain_patterns":       pain_patterns,
     }
+
+
+def match_slot(exercise_name: str, slots: list[dict]) -> "dict | None":
+    """Return the slot dict whose keyword best matches exercise_name, or None.
+
+    Matching rules:
+    - Case-insensitive.
+    - A keyword matches only when it begins at a word boundary in the name
+      (regex \\b + re.escape(keyword)), so "row" does NOT match "narrow".
+    - Longest matched keyword wins across all slots (prevents "curl" stealing
+      "wrist curl" exercises from the Forearms slot).
+    """
+    name_lower = exercise_name.lower()
+    best_slot: "dict | None" = None
+    best_len: int = -1
+
+    for slot in slots:
+        for keyword in slot.get("match", []):
+            kw_lower = keyword.lower()
+            if re.search(r"\b" + re.escape(kw_lower), name_lower):
+                if len(kw_lower) > best_len:
+                    best_len = len(kw_lower)
+                    best_slot = slot
+
+    return best_slot
+
+
+def next_split(entries: list[dict], cycle: list[str]) -> "str | None":
+    """Return the next split in the cycle after the most recently completed in-cycle session.
+
+    - Off-cycle sessions (Arms, Other, or anything not in cycle) are ignored.
+    - No in-cycle history (or empty entries) → cycle[0].
+    - Cycle wraps: after the last element, returns cycle[0].
+    """
+    if not cycle:
+        return None
+
+    in_cycle = {s.lower(): s for s in cycle}
+    last_in_cycle: "str | None" = None
+
+    for entry in entries:
+        session_label = (entry.get("session") or "").strip()
+        if session_label.lower() in in_cycle:
+            last_in_cycle = in_cycle[session_label.lower()]
+
+    if last_in_cycle is None:
+        return cycle[0]
+
+    idx = cycle.index(last_in_cycle)
+    return cycle[(idx + 1) % len(cycle)]
 
 
 def compute_metrics(entries: list[dict], weeks: int) -> dict:

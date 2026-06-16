@@ -14,6 +14,8 @@ from analytics import (
     compute_metrics,
     recommend_progression,
     detect_prs,
+    match_slot,
+    next_split,
 )
 from weekly_report import format_metrics_for_llm
 
@@ -797,3 +799,147 @@ def test_weight_svg_fallback_no_crash_empty_e1rm():
     """Empty e1rm_series dict → falls back to single-series, no crash."""
     result = _build_weight_svg([("2026-04-21", 82.0), ("2026-05-05", 81.5)], {})
     assert isinstance(result, str) and len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# match_slot — slot list fixtures mirroring workout_plan.json
+# ---------------------------------------------------------------------------
+
+_CHEST_SLOTS = [
+    {"slot": "Bench press",           "type": "main",      "match": ["bench", "bench press", "smith machine bench press", "machine bench press"]},
+    {"slot": "Pull-ups",              "type": "main",      "match": ["pull-up", "pull up", "pullup", "chin-up", "chin up"]},
+    {"slot": "Bulgarian split squat", "type": "main",      "match": ["bulgarian", "split squat"]},
+    {"slot": "Triceps",               "type": "accessory", "match": ["tricep", "pushdown", "push-down", "skull", "overhead extension"]},
+    {"slot": "Biceps",                "type": "accessory", "match": ["bicep", "curl", "bicep curl", "preacher curl", "hammer curl"]},
+]
+
+_DEADLIFT_SLOTS = [
+    {"slot": "Deadlift",       "type": "main",      "match": ["deadlift", "rdl", "romanian"]},
+    {"slot": "Overhead Press", "type": "main",      "match": ["overhead press", "overhead barbell press", "ohp", "shoulder press", "military"]},
+    {"slot": "Leg extension",  "type": "main",      "match": ["leg extension", "quad extension"]},
+    {"slot": "Triceps",        "type": "accessory", "match": ["tricep", "pushdown", "push-down", "skull", "overhead extension"]},
+    {"slot": "Biceps",         "type": "accessory", "match": ["bicep", "curl", "bicep curl", "preacher curl", "hammer curl"]},
+]
+
+_SQUAT_SLOTS = [
+    {"slot": "Squat",   "type": "main",      "match": ["squat", "hack-squat", "hack squat"]},
+    {"slot": "Dips",    "type": "main",      "match": ["dip", "dips", "machine dip", "machine dips"]},
+    {"slot": "Rows",    "type": "main",      "match": ["row", "rows", "machine row", "machine rows", "cable row"]},
+    {"slot": "Biceps",  "type": "accessory", "match": ["bicep", "curl", "bicep curl", "preacher curl", "hammer curl"]},
+    {"slot": "Triceps", "type": "accessory", "match": ["tricep", "pushdown", "push-down", "skull", "overhead extension"]},
+]
+
+# Off-cycle Arms slots — includes Forearms for collision tests
+_ARMS_SLOTS = [
+    {"slot": "Biceps",   "type": "accessory", "match": ["bicep", "curl", "bicep curl", "preacher curl", "hammer curl"]},
+    {"slot": "Triceps",  "type": "accessory", "match": ["tricep", "pushdown", "push-down", "skull", "overhead extension"]},
+    {"slot": "Forearms", "type": "accessory", "match": ["forearm", "forearm curl", "wrist", "wrist curl", "wrist twister", "grip", "reverse curl"]},
+]
+
+
+def _slot_name(result):
+    return result["slot"] if result else None
+
+
+def test_match_slot_smith_machine_bench_press():
+    assert _slot_name(match_slot("Smith Machine Bench Press", _CHEST_SLOTS)) == "Bench press"
+
+
+def test_match_slot_overhead_barbell_press():
+    assert _slot_name(match_slot("Overhead Barbell Press", _DEADLIFT_SLOTS)) == "Overhead Press"
+
+
+def test_match_slot_triceps_pushdown():
+    assert _slot_name(match_slot("Triceps Pushdown", _CHEST_SLOTS)) == "Triceps"
+
+
+def test_match_slot_pull_ups():
+    assert _slot_name(match_slot("Pull-ups", _CHEST_SLOTS)) == "Pull-ups"
+
+
+def test_match_slot_leg_extension():
+    assert _slot_name(match_slot("Leg Extension", _DEADLIFT_SLOTS)) == "Leg extension"
+
+
+def test_match_slot_machine_row():
+    assert _slot_name(match_slot("machine row", _SQUAT_SLOTS)) == "Rows"
+
+
+def test_match_slot_hack_squat():
+    assert _slot_name(match_slot("hack squat", _SQUAT_SLOTS)) == "Squat"
+
+
+def test_match_slot_narrow_grip_pulldown_not_rows():
+    # "row" must NOT match "narrow" — word-start boundary check
+    assert match_slot("narrow grip pulldown", _SQUAT_SLOTS) is None
+
+
+def test_match_slot_wrist_curl_forearms_not_biceps():
+    # "wrist curl" (9 chars) beats "curl" (4 chars) → Forearms wins
+    assert _slot_name(match_slot("wrist curl", _ARMS_SLOTS)) == "Forearms"
+
+
+def test_match_slot_cable_curl_biceps():
+    # "curl" matches Biceps; Forearms keywords don't appear in "cable curl"
+    assert _slot_name(match_slot("cable curl", _ARMS_SLOTS)) == "Biceps"
+
+
+def test_match_slot_preacher_curl_biceps():
+    # "preacher curl" (12 chars) in Biceps slot beats "curl" (4 chars)
+    assert _slot_name(match_slot("preacher curl", _ARMS_SLOTS)) == "Biceps"
+
+
+def test_match_slot_no_match():
+    assert match_slot("jumping jacks", _CHEST_SLOTS) is None
+
+
+# ---------------------------------------------------------------------------
+# next_split
+# ---------------------------------------------------------------------------
+
+_CYCLE = ["Chest", "Deadlift", "Squat"]
+
+
+def _entries_with_sessions(*session_labels):
+    """Build minimal entry list: each label becomes one entry, in order."""
+    return [{"session": label, "date": f"2026-01-{i+1:02d}", "exercise": "x"} for i, label in enumerate(session_labels)]
+
+
+def test_next_split_after_chest():
+    entries = _entries_with_sessions("Chest")
+    assert next_split(entries, _CYCLE) == "Deadlift"
+
+
+def test_next_split_after_deadlift():
+    entries = _entries_with_sessions("Deadlift")
+    assert next_split(entries, _CYCLE) == "Squat"
+
+
+def test_next_split_after_squat_wraps():
+    entries = _entries_with_sessions("Squat")
+    assert next_split(entries, _CYCLE) == "Chest"
+
+
+def test_next_split_full_rotation_chest_deadlift():
+    entries = _entries_with_sessions("Chest", "Deadlift")
+    assert next_split(entries, _CYCLE) == "Squat"
+
+
+def test_next_split_empty_entries_returns_first():
+    assert next_split([], _CYCLE) == "Chest"
+
+
+def test_next_split_no_in_cycle_history_returns_first():
+    entries = _entries_with_sessions("Arms", "Other")
+    assert next_split(entries, _CYCLE) == "Chest"
+
+
+def test_next_split_off_cycle_trailing_does_not_advance():
+    # Last in-cycle was Deadlift; Arms session after it must not advance
+    entries = _entries_with_sessions("Chest", "Deadlift", "Arms")
+    assert next_split(entries, _CYCLE) == "Squat"
+
+
+def test_next_split_case_insensitive():
+    entries = _entries_with_sessions("chest")
+    assert next_split(entries, _CYCLE) == "Deadlift"
