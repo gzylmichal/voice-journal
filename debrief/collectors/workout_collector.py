@@ -325,6 +325,42 @@ def _days_since_each_split(dated: list[tuple[str, str]]) -> dict[str, int]:
     return dict(sorted(result.items(), key=lambda x: x[1]))
 
 
+def _merge_by_exercise(entries: list[dict]) -> list[dict]:
+    """Group same-exercise rows (case-insensitive) into a single display entry.
+
+    Preserves first-appearance order. Combines weight strings, sums sets,
+    takes max reps and max top_set_kg. Raw entries are not mutated.
+    """
+    order: list[str] = []
+    groups: dict[str, list[dict]] = {}
+    for e in entries:
+        key = e["exercise"].lower()
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append(e)
+
+    merged: list[dict] = []
+    for key in order:
+        group = groups[key]
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        first = group[0]
+        weight_parts = [g["weight"] for g in group if g.get("weight")]
+        top_kgs      = [g["top_set_kg"] for g in group if g.get("top_set_kg") is not None]
+        sets_vals    = [g["sets"] for g in group if g.get("sets") is not None]
+        reps_vals    = [g["reps"] for g in group if g.get("reps") is not None]
+        merged.append({
+            **first,
+            "weight":     ", ".join(weight_parts),
+            "sets":       sum(sets_vals) if sets_vals else None,
+            "reps":       max(reps_vals) if reps_vals else None,
+            "top_set_kg": max(top_kgs) if top_kgs else None,
+        })
+    return merged
+
+
 def _format_for_ai(entries: list[dict]) -> str:
     """Format entries as text for the AI coaching prompt."""
     if not entries:
@@ -344,7 +380,7 @@ def _format_for_ai(entries: list[dict]) -> str:
         except ValueError:
             day_label = d
         lines.append(f"\n{day_label} — {by_date[d]['session']}")
-        for ex in by_date[d]["exercises"]:
+        for ex in _merge_by_exercise(by_date[d]["exercises"]):
             sets   = ex["sets"] if ex["sets"] is not None else "?"
             reps   = ex["reps"] if ex["reps"] is not None else "—"
             weight = ex["weight"] or "BW"
