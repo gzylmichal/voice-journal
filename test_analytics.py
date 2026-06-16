@@ -19,7 +19,7 @@ from analytics import (
     build_session_plan,
     score_adherence,
 )
-from weekly_report import format_metrics_for_llm
+from weekly_report import format_metrics_for_llm, _build_adherence_line
 
 
 # ---------------------------------------------------------------------------
@@ -1189,3 +1189,52 @@ def test_score_adherence_aggregate_counts():
     result = score_adherence(entries, 28, _ADHERE_TEMPLATES)
     assert result["total"] == result["hit"] + result["beat"] + result["missed"]
     assert result["total"] >= 2
+
+
+# ---------------------------------------------------------------------------
+# _build_adherence_line (weekly_report.py helper)
+# ---------------------------------------------------------------------------
+
+def test_build_adherence_line_with_data():
+    adh = {
+        "total": 9, "hit": 6, "beat": 2, "missed": 1,
+        "detail": [
+            {"exercise": "Bench Press", "date": "2026-06-10",
+             "outcome": "missed", "actual": "70x5", "planned": "72.5x5"},
+        ],
+    }
+    line = _build_adherence_line(adh)
+    assert "8/9" in line          # hit + beat = 8
+    assert "2 beat" in line
+    assert "1 missed" in line
+    assert "Bench Press" in line  # missed example included
+
+
+def test_build_adherence_line_no_missed_example():
+    adh = {"total": 3, "hit": 2, "beat": 1, "missed": 0, "detail": []}
+    line = _build_adherence_line(adh)
+    assert "3/3" in line
+    assert "0 missed" in line
+    assert "(" not in line  # no example when no misses
+
+
+def test_build_adherence_line_total_zero_returns_empty():
+    assert _build_adherence_line({"total": 0, "hit": 0, "beat": 0, "missed": 0, "detail": []}) == ""
+
+
+def test_build_adherence_line_empty_dict_returns_empty():
+    assert _build_adherence_line({}) == ""
+
+
+def test_format_metrics_unchanged_without_adherence():
+    """format_metrics_for_llm output is unaffected — adherence line is separate."""
+    entries = [
+        _make_entry("Bench press", "2026-04-21", "Chest", 5, 1, "80x5, 85x3, 90x1", 90.0),
+        _make_entry("Bench press", "2026-04-28", "Chest", 5, 1, "82.5x5, 87.5x3, 92.5x1", 92.5),
+    ]
+    metrics = compute_metrics(entries, 2)
+    out = format_metrics_for_llm(metrics)
+    assert "--- Strength Progression ---" in out
+    assert "--- Adherence ---" in out
+    # The plan-adherence section is appended by main(), not by format_metrics_for_llm
+    assert "Plan Adherence" not in out
