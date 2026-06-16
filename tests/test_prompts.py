@@ -114,3 +114,25 @@ def test_extraction_prompt_query_polish_cues():
 def test_extraction_prompt_query_isolation_rule():
     # Must state that a query memo should NOT populate other keys
     assert "do NOT" in EXTRACTION_SYSTEM_PROMPT or "ONLY a question" in EXTRACTION_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Step 3: task type enum + task/event boundary rule
+# ---------------------------------------------------------------------------
+
+def test_extraction_task_type_new_enum_values_present():
+    """New Notion DB type options must all appear in the prompt."""
+    for t in ("Health", "Finance", "Other"):
+        assert t in EXTRACTION_SYSTEM_PROMPT, f"Missing task type: {t}"
+
+
+def test_extraction_task_event_boundary_rule_present():
+    """Prompt must state explicitly that specific date+time → event, not task."""
+    prompt_lower = EXTRACTION_SYSTEM_PROMPT.lower()
+    assert "specific" in prompt_lower and "event" in prompt_lower
+    assert "time" in prompt_lower
+
+
+def test_extraction_task_event_boundary_polish_example():
+    """Must include a Polish timed-errand example to guide the model."""
+    assert "pieczarki" in EXTRACTION_SYSTEM_PROMPT or "11:10" in EXTRACTION_SYSTEM_PROMPT

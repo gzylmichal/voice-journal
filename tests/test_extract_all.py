@@ -320,3 +320,46 @@ def test_query_invalid_detected_field_coerced_to_false():
     with patch("ai_client.call_ai", return_value=json.dumps(bad)):
         result = extract_all(_transcripts("Slept well. I weigh 82.5 kg."), _DATE)
     assert result["query"]["detected"] is False
+
+
+# ---------------------------------------------------------------------------
+# Step 3: task type enum + task/event boundary
+# ---------------------------------------------------------------------------
+
+_TIMED_ERRAND_RESPONSE = {
+    "workout": {"detected": False, "workout_name": None, "exercises": []},
+    "tasks": [],
+    "events": [{"title": "Kup pieczarki", "date": "2026-05-20", "time": "11:10",
+                "duration_minutes": None, "notes": None}],
+    "bodyweight": {"detected": False},
+    "metrics": {"sleep": None, "energy": None, "note": None},
+    "query": {"detected": False, "question": None},
+}
+
+
+def test_timed_errand_extracts_as_event_not_task():
+    """A timed errand (specific time) must appear in events, not tasks."""
+    with patch("ai_client.call_ai", return_value=json.dumps(_TIMED_ERRAND_RESPONSE)):
+        result = extract_all(_transcripts("kup pieczarki o 11:10"), _DATE)
+    assert len(result["tasks"]) == 0
+    assert len(result["events"]) == 1
+    assert result["events"][0]["time"] == "11:10"
+
+
+def test_new_task_types_health_and_finance_pass_through():
+    """Tasks with Health and Finance types (new enum) pass through unchanged."""
+    response = dict(_FULL_RESPONSE)
+    response["tasks"] = [
+        {"title": "Check blood results", "description": None, "due_date": None,
+         "priority": "Normal", "type": "Health"},
+        {"title": "Review budget", "description": None, "due_date": None,
+         "priority": "Normal", "type": "Finance"},
+    ]
+    with patch("ai_client.call_ai", return_value=json.dumps(response)):
+        result = extract_all(
+            _transcripts("I weighed myself, 82.5 kg. Check blood results. Review budget."),
+            _DATE,
+        )
+    types = [t["type"] for t in result["tasks"]]
+    assert "Health" in types
+    assert "Finance" in types

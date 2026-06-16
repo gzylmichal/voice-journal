@@ -180,11 +180,25 @@ Extract action items and tasks. Return a JSON array of task objects, each with:
 - "description": one sentence of context, or null
 - "due_date": ISO date YYYY-MM-DD if a deadline or timeframe is mentioned, or null
 - "priority": always "Normal"
-- "type": one of: Assignment, Exam, Errand, Work, Admin, Personal, Home
-  (Errand: physical tasks outside home; Home: household tasks; Admin: paperwork/bureaucracy;
-   Work: professional tasks; Personal: self-improvement/health/hobbies; Assignment: study tasks)
+- "type": one of: Personal, Work, Health, Finance, Errand, Home, Other
+  (Personal: self-improvement, hobbies, relationships; Work: professional tasks;
+   Health: medical, fitness admin, appointments booked as tasks; Finance: budgeting, payments, banking;
+   Errand: physical tasks outside home — buy, pick up, drop off; Home: household tasks; Other: anything else)
 
-Do NOT extract: things already done, vague wishes without clear intent, workout exercises, calendar appointments.
+CRITICAL — task vs. event boundary:
+Anything with BOTH a specific date AND a specific time is an EVENT, not a task — even if phrased as a to-do.
+A task is a date-optional action item without a fixed clock time.
+
+Examples:
+  "Remind me to call the dentist" → task (no time) · type: Health
+  "Dentist appointment Thursday at 10:00" → event (specific time) · NOT a task
+  "kup pieczarki o 11:10" (buy mushrooms at 11:10) → event at 11:10, NOT a task
+  "kup pieczarki na jutro" (buy mushrooms for tomorrow) → task (no time) · type: Errand
+  "Review the budget this week, and also call Tom at 14:00 tomorrow" →
+    task: "Review the budget" (type: Finance) + event: "Call Tom" at 14:00
+
+Do NOT extract: things already done, vague wishes without clear intent, workout exercises,
+calendar appointments (specific date + time → those go in events instead).
 If no tasks found: []
 
 ## events
