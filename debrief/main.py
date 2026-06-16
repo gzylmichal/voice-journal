@@ -27,7 +27,7 @@ from collectors import notion_collector as notion_mod
 from collectors import binance_collector as binance_mod
 from collectors import airquality_collector as aqi_mod
 from collectors import history_collector as history_mod
-from collectors.workout_collector import collect_today_workout, collect_training_suggestion
+from collectors.workout_collector import collect_today_workout, collect_training_suggestion, collect_session_plan
 from collectors import task_collector as task_mod
 from synthesis import synthesize_tldr
 from formatter import render_email
@@ -126,6 +126,14 @@ def main():
         logger.warning("  ✗ training suggestion failed: %s", exc)
         training_suggestion = None
 
+    logger.info("Collecting: session plan")
+    try:
+        session_plan = collect_session_plan(cfg)
+        logger.info("  ✓ session plan collected (available=%s)", session_plan.get("plan_available"))
+    except Exception as exc:
+        logger.warning("  ✗ session plan failed: %s", exc)
+        session_plan = None
+
     results = run_collectors(cfg)
     successful = sum(1 for v in results.values() if v is not None)
     total = len(results)
@@ -167,6 +175,7 @@ def main():
         history=results.get("history"),
         stale_tasks=results.get("stale_tasks"),
         training_suggestion=training_suggestion,
+        session_plan=session_plan,
     )
 
     if args.preview:

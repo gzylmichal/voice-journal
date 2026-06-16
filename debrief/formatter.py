@@ -600,6 +600,78 @@ def render_training_suggestion(data: dict) -> str:
     )
 
 
+def render_session_plan(data: dict, fallback_suggestion: Optional[dict] = None) -> str:
+    """Render today's prescribed session plan.
+
+    When data has a built plan, renders a 'Today's session' card with one
+    compact line per slot. Falls back to render_training_suggestion when no
+    plan config is present (Phase L behaviour). Omits entirely when both
+    are absent.
+    """
+    if data and data.get("plan_available"):
+        from collectors.workout_collector import render_session_plan_text
+        split = data.get("split", "")
+        plan  = data.get("plan", [])
+        line  = render_session_plan_text(data)
+        if not line:
+            return render_training_suggestion(fallback_suggestion)
+
+        # Build per-slot rows for a richer card (label + detail)
+        rows = []
+        for slot in plan:
+            slot_name = _e(slot.get("slot", ""))
+            slot_type = slot.get("type", "main")
+            border    = f"border-bottom: 1px solid {C['border']};" if slot != plan[-1] else ""
+
+            if slot.get("reminder"):
+                detail_html = (
+                    f'<span class="t-secondary" style="color:{C["text_secondary"]};">'
+                    f'reminder</span>'
+                )
+            elif "rec" in slot:
+                from collectors.workout_collector import _format_slot_with_rec
+                detail_text = _format_slot_with_rec(slot)
+                detail_html = _e(detail_text)
+            else:
+                exercise = _e(slot.get("exercise") or slot.get("slot", ""))
+                last     = _e(slot.get("last_sets_str", ""))
+                detail_html = (
+                    f'{exercise} '
+                    f'<span class="t-secondary" style="color:{C["text_secondary"]};">'
+                    f'(last {last})</span>'
+                    if last else exercise
+                )
+
+            type_label = (
+                f'<span class="t-tertiary" style="font-size:10px;color:{C["text_tertiary"]};">'
+                f'{_e(slot_type)}</span> '
+                if slot_type == "accessory" else ""
+            )
+
+            rows.append(
+                f'<tr>'
+                f'<td class="row-border" style="padding:8px 10px 8px 0;{border}'
+                f'font:500 13px/1.4 {FONT};color:{C["text_primary"]};'
+                f'white-space:nowrap;vertical-align:top;">'
+                f'{type_label}{slot_name}</td>'
+                f'<td class="row-border" style="padding:8px 0;{border}'
+                f'font:400 13px/1.4 {FONT};color:{C["text_primary"]};">'
+                f'{detail_html}</td>'
+                f'</tr>'
+            )
+
+        return (
+            _label(f"Today's session — {_e(split)} day") +
+            _card_open("padding: 4px 14px; margin-bottom: 20px;") +
+            f'<table role="presentation" cellspacing="0" cellpadding="0" border="0" '
+            f'style="width: 100%;">' + "".join(rows) + "</table>" +
+            _card_close()
+        )
+
+    # No plan config → fall back to Phase L rotation suggestion
+    return render_training_suggestion(fallback_suggestion)
+
+
 # ---------------------------------------------------------------------------
 # Weekly Review renderer
 # ---------------------------------------------------------------------------
@@ -832,6 +904,7 @@ def render_email(
     history: Optional[dict] = None,
     stale_tasks: Optional[dict] = None,
     training_suggestion: Optional[dict] = None,
+    session_plan: Optional[dict] = None,
 ) -> str:
     """Compose the full HTML email."""
 
@@ -840,7 +913,7 @@ def render_email(
         render_weather(weather),
         render_agenda(calendar),
         render_workout(workout),
-        render_training_suggestion(training_suggestion),
+        render_session_plan(session_plan, fallback_suggestion=training_suggestion),
         render_stale_tasks(stale_tasks),
         render_notion(notion),
         render_markets(currency, crypto),
