@@ -16,6 +16,7 @@ from analytics import (
     detect_prs,
     match_slot,
     next_split,
+    build_session_plan,
 )
 from weekly_report import format_metrics_for_llm
 
@@ -943,3 +944,106 @@ def test_next_split_off_cycle_trailing_does_not_advance():
 def test_next_split_case_insensitive():
     entries = _entries_with_sessions("chest")
     assert next_split(entries, _CYCLE) == "Deadlift"
+
+
+# ---------------------------------------------------------------------------
+# build_session_plan
+# ---------------------------------------------------------------------------
+
+_CHEST_TEMPLATE = [
+    {"slot": "Bench press",           "type": "main",      "match": ["bench", "bench press"]},
+    {"slot": "Pull-ups",              "type": "main",      "match": ["pull-up", "pullup"]},
+    {"slot": "Triceps",               "type": "accessory", "muscle": "Triceps",
+     "match": ["tricep", "pushdown"]},
+    {"slot": "Biceps",                "type": "accessory", "muscle": "Biceps",
+     "match": ["bicep", "curl"]},
+]
+
+_TODAY = date.today()
+
+
+def _wo(exercise, days_ago, weight, reps=5, session="Chest"):
+    return {
+        "exercise": exercise,
+        "date": (_TODAY - timedelta(days=days_ago)).isoformat(),
+        "weight": weight,
+        "reps": reps,
+        "sets": 3,
+        "session": session,
+        "top_set_kg": None,
+        "muscle_group": "",
+    }
+
+
+def test_build_session_plan_main_progresses():
+    entries = [
+        _wo("Bench Press", 14, "70x5, 70x5, 70x5"),
+        _wo("Bench Press",  7, "70x5, 70x5, 70x5"),
+        _wo("Bench Press",  0, "70x5, 70x5, 70x5"),
+    ]
+    plan = build_session_plan(entries, "Chest", _CHEST_TEMPLATE)
+    bench = next(s for s in plan if s["slot"] == "Bench press")
+    assert bench["exercise"] == "Bench Press"
+    assert bench["rec"]["action"] == "progress"
+    assert bench["rec"]["weight_kg"] == 72.5
+
+
+def test_build_session_plan_variation_swap_uses_latest():
+    # Two bench variations; Smith Machine is more recent → plan uses Smith Machine
+    entries = [
+        _wo("Bench Press",       14, "70x5, 70x5, 70x5"),
+        _wo("Bench Press",        7, "70x5, 70x5, 70x5"),
+        _wo("Smith Machine Bench Press", 3, "65x8, 65x8"),
+        _wo("Smith Machine Bench Press", 1, "65x8, 65x8"),
+    ]
+    plan = build_session_plan(entries, "Chest", _CHEST_TEMPLATE)
+    bench = next(s for s in plan if s["slot"] == "Bench press")
+    assert bench["exercise"] == "Smith Machine Bench Press"
+    assert bench["rec"]["action"] in ("progress", "repeat", "no_recommendation")
+
+
+def test_build_session_plan_too_few_sessions_main_last_only():
+    # Only 1 bench session → suggestion: None, last numbers shown
+    entries = [_wo("Bench Press", 5, "70x5, 70x5")]
+    plan = build_session_plan(entries, "Chest", _CHEST_TEMPLATE)
+    bench = next(s for s in plan if s["slot"] == "Bench press")
+    assert bench["exercise"] == "Bench Press"
+    assert bench["suggestion"] is None
+    assert bench["last_sets_str"] == "70x5, 70x5"
+    assert "rec" not in bench
+
+
+def test_build_session_plan_no_history_main_reminder():
+    # No matching exercises → reminder
+    plan = build_session_plan([], "Chest", _CHEST_TEMPLATE)
+    bench = next(s for s in plan if s["slot"] == "Bench press")
+    assert bench.get("reminder") is True
+
+
+def test_build_session_plan_accessory_with_history_progresses():
+    entries = [
+        _wo("Triceps Pushdown", 14, "30x12, 30x12"),
+        _wo("Triceps Pushdown",  7, "30x12, 30x12"),
+    ]
+    plan = build_session_plan(entries, "Chest", _CHEST_TEMPLATE)
+    tri = next(s for s in plan if s["slot"] == "Triceps")
+    assert tri["exercise"] == "Triceps Pushdown"
+    assert tri["rec"]["action"] in ("progress", "repeat")
+
+
+def test_build_session_plan_accessory_no_history_reminder():
+    plan = build_session_plan([], "Chest", _CHEST_TEMPLATE)
+    tri = next(s for s in plan if s["slot"] == "Triceps")
+    assert tri.get("reminder") is True
+
+
+def test_build_session_plan_accessory_one_session_reminder():
+    entries = [_wo("Bicep Curl", 5, "20x10, 20x10")]
+    plan = build_session_plan(entries, "Chest", _CHEST_TEMPLATE)
+    bic = next(s for s in plan if s["slot"] == "Biceps")
+    assert bic.get("reminder") is True
+
+
+def test_build_session_plan_order_matches_template():
+    plan = build_session_plan([], "Chest", _CHEST_TEMPLATE)
+    assert [s["slot"] for s in plan] == [t["slot"] for t in _CHEST_TEMPLATE]

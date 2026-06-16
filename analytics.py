@@ -756,6 +756,77 @@ def next_split(entries: list[dict], cycle: list[str]) -> "str | None":
     return cycle[(idx + 1) % len(cycle)]
 
 
+def build_session_plan(
+    entries: list[dict],
+    split: str,
+    template: list[dict],
+) -> list[dict]:
+    """Build a prescribed session plan for `split` from workout history.
+
+    Pure function — no I/O, no LLM.
+
+    For each slot in `template`:
+    - Find all entries whose exercise matches the slot via match_slot.
+    - Among matches, pick the variation done most recently.
+    - Gather that variation's full history, run recommend_progression.
+    - main slot, ≥2 sessions → {slot, type, exercise, rec, last_sets_str}
+    - main slot, <2 sessions → {slot, type, exercise, last_sets_str, suggestion: None}
+    - main slot, no history → {slot, type, reminder: True}
+    - accessory slot, ≥2 sessions → {slot, type, exercise, rec, last_sets_str}
+    - accessory slot, <2 sessions or no history → {slot, type, reminder: True}
+
+    Returns ordered list of slot dicts matching template order.
+    """
+    slot_plans: list[dict] = []
+
+    for slot_def in template:
+        slot_name  = slot_def.get("slot", "")
+        slot_type  = slot_def.get("type", "main")
+
+        # Collect all entries that match this slot
+        matched: list[dict] = [
+            e for e in entries
+            if match_slot(e.get("exercise") or "", [slot_def]) is not None
+        ]
+
+        if not matched:
+            slot_plans.append({"slot": slot_name, "type": slot_type, "reminder": True})
+            continue
+
+        # Pick the variation (exercise name) done most recently
+        matched_sorted = sorted(matched, key=lambda e: e.get("date") or "")
+        latest_exercise = matched_sorted[-1].get("exercise") or ""
+
+        # Gather full history for that specific variation
+        variation_history = [
+            e for e in matched_sorted
+            if (e.get("exercise") or "").lower() == latest_exercise.lower()
+        ]
+
+        rec = recommend_progression(variation_history)
+        last_sets_str = rec.get("last_sets_str", "")
+
+        if len(variation_history) < 2:
+            if slot_type == "accessory":
+                slot_plans.append({"slot": slot_name, "type": slot_type, "reminder": True})
+            else:
+                slot_plans.append({
+                    "slot": slot_name, "type": slot_type,
+                    "exercise": latest_exercise,
+                    "last_sets_str": last_sets_str,
+                    "suggestion": None,
+                })
+        else:
+            slot_plans.append({
+                "slot": slot_name, "type": slot_type,
+                "exercise": latest_exercise,
+                "rec": rec,
+                "last_sets_str": last_sets_str,
+            })
+
+    return slot_plans
+
+
 def compute_metrics(entries: list[dict], weeks: int) -> dict:
     """Single entry point. Returns combined metrics dict."""
     dates = sorted(e["date"] for e in entries if e.get("date"))
