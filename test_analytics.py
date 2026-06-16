@@ -17,6 +17,7 @@ from analytics import (
     match_slot,
     next_split,
     build_session_plan,
+    score_adherence,
 )
 from weekly_report import format_metrics_for_llm
 
@@ -1047,3 +1048,144 @@ def test_build_session_plan_accessory_one_session_reminder():
 def test_build_session_plan_order_matches_template():
     plan = build_session_plan([], "Chest", _CHEST_TEMPLATE)
     assert [s["slot"] for s in plan] == [t["slot"] for t in _CHEST_TEMPLATE]
+
+
+# ---------------------------------------------------------------------------
+# score_adherence
+# ---------------------------------------------------------------------------
+
+_ADHERE_TEMPLATES = [
+    {"slot": "Bench press", "type": "main",      "match": ["bench"]},
+    {"slot": "Overhead",    "type": "main",      "match": ["overhead press", "ohp"]},
+    {"slot": "Triceps",     "type": "accessory", "match": ["tricep", "pushdown"]},
+]
+
+_TODAY_A = date.today()
+
+
+def _sa_entry(exercise, days_ago, weight, reps=5, session="Chest"):
+    """Build a minimal workout entry for score_adherence tests."""
+    return {
+        "exercise": exercise,
+        "date": (_TODAY_A - timedelta(days=days_ago)).isoformat(),
+        "weight": weight,
+        "reps": reps,
+        "sets": 3,
+        "session": session,
+        "top_set_kg": None,
+        "muscle_group": "",
+    }
+
+
+def test_score_adherence_empty_window_returns_zero():
+    result = score_adherence([], 28, _ADHERE_TEMPLATES)
+    assert result["total"] == 0
+    assert result["detail"] == []
+
+
+def test_score_adherence_no_templates_returns_zero():
+    entries = [_sa_entry("Bench Press", 3, "70x5")]
+    result = score_adherence(entries, 28, [])
+    assert result["total"] == 0
+
+
+def test_score_adherence_hit():
+    # Two prior sessions at 70×5, suggestion will be 72.5×5 (progress).
+    # Actual session: 72.5×5 → hit.
+    entries = [
+        _sa_entry("Bench Press", 14, "70x5, 70x5, 70x5"),
+        _sa_entry("Bench Press",  7, "70x5, 70x5, 70x5"),
+        _sa_entry("Bench Press",  1, "72.5x5, 72.5x5, 72.5x5"),
+    ]
+    result = score_adherence(entries, 28, _ADHERE_TEMPLATES)
+    assert result["total"] >= 1
+    in_window = [d for d in result["detail"] if d["exercise"] == "Bench Press"]
+    assert any(d["outcome"] == "hit" for d in in_window)
+
+
+def test_score_adherence_beat_more_weight():
+    # Two prior sessions at 70×5, suggestion ≈ 72.5×5.
+    # Actual: 80×5 → beat (more weight than suggested).
+    entries = [
+        _sa_entry("Bench Press", 14, "70x5, 70x5, 70x5"),
+        _sa_entry("Bench Press",  7, "70x5, 70x5, 70x5"),
+        _sa_entry("Bench Press",  1, "80x5, 80x5"),
+    ]
+    result = score_adherence(entries, 28, _ADHERE_TEMPLATES)
+    in_window = [d for d in result["detail"] if d["exercise"] == "Bench Press"]
+    assert any(d["outcome"] == "beat" for d in in_window)
+
+
+def test_score_adherence_beat_more_reps_same_weight():
+    # Two prior sessions at 70×5, suggestion ≈ 72.5×5.
+    # Actual: 72.5×8 → beat (same weight, more reps).
+    entries = [
+        _sa_entry("Bench Press", 14, "70x5, 70x5, 70x5"),
+        _sa_entry("Bench Press",  7, "70x5, 70x5, 70x5"),
+        _sa_entry("Bench Press",  1, "72.5x8, 72.5x8"),
+    ]
+    result = score_adherence(entries, 28, _ADHERE_TEMPLATES)
+    in_window = [d for d in result["detail"] if d["exercise"] == "Bench Press"]
+    assert any(d["outcome"] == "beat" for d in in_window)
+
+
+def test_score_adherence_missed():
+    # Two prior sessions at 70×5, suggestion ≈ 72.5×5.
+    # Actual: 60×5 → missed (less weight).
+    entries = [
+        _sa_entry("Bench Press", 14, "70x5, 70x5, 70x5"),
+        _sa_entry("Bench Press",  7, "70x5, 70x5, 70x5"),
+        _sa_entry("Bench Press",  1, "60x5, 60x5"),
+    ]
+    result = score_adherence(entries, 28, _ADHERE_TEMPLATES)
+    in_window = [d for d in result["detail"] if d["exercise"] == "Bench Press"]
+    assert any(d["outcome"] == "missed" for d in in_window)
+
+
+def test_score_adherence_one_prior_session_skipped():
+    # Only 1 prior session → no suggestion existed → skipped.
+    entries = [
+        _sa_entry("Bench Press", 7, "70x5, 70x5"),
+        _sa_entry("Bench Press", 1, "72.5x5, 72.5x5"),
+    ]
+    result = score_adherence(entries, 28, _ADHERE_TEMPLATES)
+    # The in-window session at day-1 has only 1 prior → skipped
+    assert result["total"] == 0
+
+
+def test_score_adherence_accessory_skipped():
+    # Triceps Pushdown matches the accessory slot → skipped for scoring.
+    entries = [
+        _sa_entry("Triceps Pushdown", 14, "30x12"),
+        _sa_entry("Triceps Pushdown",  7, "30x12"),
+        _sa_entry("Triceps Pushdown",  1, "32.5x12"),
+    ]
+    result = score_adherence(entries, 28, _ADHERE_TEMPLATES)
+    assert result["total"] == 0
+
+
+def test_score_adherence_outside_window_not_counted():
+    # Session 40 days ago is outside a 28-day window → not scored.
+    entries = [
+        _sa_entry("Bench Press", 60, "70x5"),
+        _sa_entry("Bench Press", 50, "70x5"),
+        _sa_entry("Bench Press", 40, "72.5x5"),
+    ]
+    result = score_adherence(entries, 28, _ADHERE_TEMPLATES)
+    assert result["total"] == 0
+
+
+def test_score_adherence_aggregate_counts():
+    # Multiple in-window sessions; verify totals = hit + beat + missed.
+    entries = [
+        # Session A prior sessions
+        _sa_entry("Bench Press", 21, "70x5, 70x5"),
+        _sa_entry("Bench Press", 14, "70x5, 70x5"),
+        # In-window session A: hit
+        _sa_entry("Bench Press",  7, "72.5x5, 72.5x5"),
+        # In-window session B: missed
+        _sa_entry("Bench Press",  1, "60x5, 60x5"),
+    ]
+    result = score_adherence(entries, 28, _ADHERE_TEMPLATES)
+    assert result["total"] == result["hit"] + result["beat"] + result["missed"]
+    assert result["total"] >= 2

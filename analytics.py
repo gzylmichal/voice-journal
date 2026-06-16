@@ -827,6 +827,156 @@ def build_session_plan(
     return slot_plans
 
 
+def score_adherence(
+    entries: list[dict],
+    window_days: int,
+    templates: list[dict],
+) -> dict:
+    """Score planned-vs-actual adherence for main-slot exercises in the window.
+
+    For each session within window_days, for each exercise that:
+      - matches a 'main'-type slot in templates
+      - has ≥ 2 prior sessions (so a suggestion existed)
+    Recomputes what recommend_progression would have suggested from history
+    strictly before that session, then compares to the actual top set.
+
+    Outcome categories:
+      hit  — actual top weight ≥ rec_weight AND actual top reps ≥ rec_reps
+              (but not a beat)
+      beat — actual top weight > rec_weight, OR
+             actual top weight ≥ rec_weight AND actual top reps > rec_reps
+      missed — fell short of hit/beat
+
+    Exercises with action='no_recommendation' or no comparable target are skipped.
+
+    Returns:
+        {"total": int, "hit": int, "beat": int, "missed": int, "detail": list}
+    """
+    _empty = {"total": 0, "hit": 0, "beat": 0, "missed": 0, "detail": []}
+
+    if not entries or not templates:
+        return _empty
+
+    main_slots = [s for s in templates if s.get("type") == "main"]
+    if not main_slots:
+        return _empty
+
+    today = date.today()
+    cutoff = today - timedelta(days=window_days)
+
+    # Group all entries by exercise name (lower-cased) sorted by date
+    by_exercise: dict[str, list[dict]] = defaultdict(list)
+    for e in entries:
+        name = (e.get("exercise") or "").strip()
+        if not name:
+            continue
+        by_exercise[name.lower()].append(e)
+
+    for key in by_exercise:
+        by_exercise[key].sort(key=lambda e: e.get("date") or "")
+
+    total = hit = beat = missed = 0
+    detail: list[dict] = []
+
+    # Collect in-window entries for main slots, ordered by date
+    in_window: list[dict] = []
+    for e in entries:
+        date_str = e.get("date") or ""
+        try:
+            date_obj = datetime.fromisoformat(date_str).date()
+        except (ValueError, TypeError):
+            continue
+        if date_obj < cutoff:
+            continue
+        exercise_name = (e.get("exercise") or "").strip()
+        if not exercise_name:
+            continue
+        if match_slot(exercise_name, main_slots) is None:
+            continue
+        in_window.append((date_obj, date_str, exercise_name, e))
+
+    in_window.sort(key=lambda t: t[0])
+
+    for date_obj, date_str, exercise_name, actual_entry in in_window:
+        key = exercise_name.lower()
+        all_sessions = by_exercise.get(key, [])
+
+        # Prior sessions strictly before this date
+        prior = [s for s in all_sessions if (s.get("date") or "") < date_str]
+
+        if len(prior) < 2:
+            continue
+
+        rec = recommend_progression(prior)
+        if rec.get("action") == "no_recommendation":
+            continue
+
+        rec_weight = rec.get("weight_kg")
+        rec_reps = rec.get("target_reps")
+
+        # Parse actual top set from this session
+        actual_sets_str = actual_entry.get("weight") or ""
+        is_bw, _ = _detect_bw(actual_sets_str)
+
+        if is_bw:
+            if rec_reps is None:
+                continue
+            try:
+                actual_reps = int(actual_entry.get("reps") or 0)
+            except (TypeError, ValueError):
+                continue
+            if actual_reps <= 0:
+                continue
+            if actual_reps > rec_reps:
+                outcome = "beat"
+            elif actual_reps >= rec_reps:
+                outcome = "hit"
+            else:
+                outcome = "missed"
+            detail.append({
+                "exercise": exercise_name,
+                "date": date_str,
+                "outcome": outcome,
+                "actual": f"BW×{actual_reps}",
+                "planned": f"BW×{rec_reps}",
+            })
+        else:
+            if rec_weight is None or rec_reps is None:
+                continue
+            valid_sets = [(w, r) for w, r in parse_sets_string(actual_sets_str) if w > 0 and r > 0]
+            if not valid_sets:
+                continue
+            actual_top_w = max(w for w, r in valid_sets)
+            actual_top_r = max(r for w, r in valid_sets if w == actual_top_w)
+
+            if actual_top_w > rec_weight:
+                outcome = "beat"
+            elif actual_top_w >= rec_weight and actual_top_r > rec_reps:
+                outcome = "beat"
+            elif actual_top_w >= rec_weight and actual_top_r >= rec_reps:
+                outcome = "hit"
+            else:
+                outcome = "missed"
+
+            detail.append({
+                "exercise": exercise_name,
+                "date": date_str,
+                "outcome": outcome,
+                "actual": f"{actual_top_w:.4g}×{actual_top_r}",
+                "planned": f"{rec_weight:.4g}×{rec_reps}",
+            })
+
+        total += 1
+        if outcome == "hit":
+            hit += 1
+        elif outcome == "beat":
+            beat += 1
+        else:
+            missed += 1
+
+    return {"total": total, "hit": hit, "beat": beat, "missed": missed, "detail": detail}
+
+
 def compute_metrics(entries: list[dict], weeks: int) -> dict:
     """Single entry point. Returns combined metrics dict."""
     dates = sorted(e["date"] for e in entries if e.get("date"))
