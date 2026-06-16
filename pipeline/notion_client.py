@@ -19,6 +19,7 @@ from pipeline.config import (
 )
 from pipeline.extractors import _sets_detail_summary, extract_top_weight, infer_muscle_group
 from models import parse_workout_entry
+from analytics import classify_session
 
 log = logging.getLogger(__name__)
 
@@ -41,22 +42,8 @@ def create_notion_workout_entries(workout: dict, recording_date: date, resolved_
         "Notion-Version": NOTION_VERSION,
     }
 
-    session_type = workout.get("workout_name", "Other")
-    SESSION_MAP = {
-        "chest":    "Chest",
-        "push":     "Chest",
-        "deadlift": "Deadlift",
-        "pull":     "Deadlift",
-        "squat":    "Squat",
-        "leg":      "Squat",
-        "arm":      "Arms",
-        "upper":    "Other",
-    }
-    session_normalised = "Other"
-    for key, val in SESSION_MAP.items():
-        if key in session_type.lower():
-            session_normalised = val
-            break
+    exercise_names = [ex.get("name", "") for ex in workout.get("exercises", [])]
+    session_normalised = classify_session(exercise_names)
 
     created = 0
     for ex in workout["exercises"]:

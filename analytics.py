@@ -706,6 +706,39 @@ def _compute_rpe_signals(entries: list[dict], strength_progression: dict) -> dic
     }
 
 
+_ARM_EXERCISE_KEYWORDS = ("bicep", "tricep", "curl", "preacher", "skull", "forearm", "pushdown")
+
+
+def classify_session(exercise_names: list) -> str:
+    """Classify a workout session type from exercise names.
+
+    Priority (first match wins):
+    1. any name contains 'deadlift'                          → 'Deadlift'
+    2. any name contains 'bench'                             → 'Chest'
+    3. any name contains 'squat' but NOT 'split squat'       → 'Squat'
+       (covers 'hack squat'; Bulgarian split squat is excluded)
+    4. ALL names are arms-isolation exercises                 → 'Arms'
+    5. else                                                  → 'Other'
+    """
+    names_lower = [n.lower() for n in exercise_names if n]
+    if not names_lower:
+        return "Other"
+
+    if any("deadlift" in n for n in names_lower):
+        return "Deadlift"
+
+    if any("bench" in n for n in names_lower):
+        return "Chest"
+
+    if any("squat" in n and "split squat" not in n for n in names_lower):
+        return "Squat"
+
+    if all(any(kw in n for kw in _ARM_EXERCISE_KEYWORDS) for n in names_lower):
+        return "Arms"
+
+    return "Other"
+
+
 def match_slot(exercise_name: str, slots: list[dict]) -> "dict | None":
     """Return the slot dict whose keyword best matches exercise_name, or None.
 

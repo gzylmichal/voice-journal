@@ -18,6 +18,7 @@ from analytics import (
     next_split,
     build_session_plan,
     score_adherence,
+    classify_session,
 )
 from weekly_report import format_metrics_for_llm, _build_adherence_line
 
@@ -1238,3 +1239,56 @@ def test_format_metrics_unchanged_without_adherence():
     assert "--- Adherence ---" in out
     # The plan-adherence section is appended by main(), not by format_metrics_for_llm
     assert "Plan Adherence" not in out
+
+
+# ---------------------------------------------------------------------------
+# classify_session — Step 2 bugfix
+# ---------------------------------------------------------------------------
+
+def test_classify_session_chest_day():
+    """Bench + Bulgarian split squat (typical chest day) → Chest."""
+    names = ["Bench Press", "Bulgarian split squat", "Cable fly", "Triceps pushdown"]
+    assert classify_session(names) == "Chest"
+
+
+def test_classify_session_deadlift_day():
+    """Deadlift day → Deadlift."""
+    names = ["Deadlift", "Romanian deadlift", "Barbell row"]
+    assert classify_session(names) == "Deadlift"
+
+
+def test_classify_session_squat_day():
+    """Squat and hack squat → Squat."""
+    names = ["Squat", "Hack squat", "Leg press"]
+    assert classify_session(names) == "Squat"
+
+
+def test_classify_session_arms_only():
+    """Pure arms isolation → Arms."""
+    names = ["Bicep curl", "Hammer curl", "Triceps pushdown"]
+    assert classify_session(names) == "Arms"
+
+
+def test_classify_session_empty():
+    """No exercises → Other."""
+    assert classify_session([]) == "Other"
+
+
+def test_classify_session_deadlift_wins_over_bench():
+    """Deadlift has priority over bench when both present."""
+    assert classify_session(["Deadlift", "Bench press"]) == "Deadlift"
+
+
+def test_classify_session_bench_wins_over_split_squat():
+    """Bench wins even when Bulgarian split squat is in the list."""
+    assert classify_session(["Bench Press", "Bulgarian split squat"]) == "Chest"
+
+
+def test_classify_session_hack_squat_is_squat():
+    """Hack squat (no 'split' in name) classifies as Squat."""
+    assert classify_session(["Hack squat", "Leg press"]) == "Squat"
+
+
+def test_classify_session_split_squat_alone_is_other():
+    """Bulgarian split squat alone (no bench, no deadlift) → Other."""
+    assert classify_session(["Bulgarian split squat"]) == "Other"
