@@ -18,6 +18,10 @@ import logging
 from datetime import datetime, date
 from pathlib import Path
 
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+
 from config import load_config
 from collectors import weather as weather_mod
 from collectors import news as news_mod
@@ -32,6 +36,11 @@ from collectors import task_collector as task_mod
 from synthesis import synthesize_tldr
 from formatter import render_email
 from sender import send_email
+
+try:
+    from pipeline.notify import send_session_plan as _send_session_plan
+except ImportError:
+    _send_session_plan = None
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -133,6 +142,12 @@ def main():
     except Exception as exc:
         logger.warning("  ✗ session plan failed: %s", exc)
         session_plan = None
+
+    if session_plan and session_plan.get("plan_available") and _send_session_plan is not None:
+        try:
+            _send_session_plan(session_plan)
+        except Exception as exc:
+            logger.warning("session plan push failed (non-fatal): %s", exc)
 
     results = run_collectors(cfg)
     successful = sum(1 for v in results.values() if v is not None)

@@ -290,3 +290,52 @@ def test_html_plan_supersedes_training_suggestion():
     html = render_session_plan(data, fallback_suggestion=fallback)
     assert "Today" in html and "session" in html
     assert "SomethingElse" not in html
+
+
+# ---------------------------------------------------------------------------
+# send_session_plan push (Step 3)
+# ---------------------------------------------------------------------------
+
+def test_send_session_plan_formats_message():
+    from pipeline.notify import send_session_plan, _format_session_plan_push
+    plan = [
+        {
+            "slot": "Bench press", "type": "main", "exercise": "Bench Press",
+            "rec": {"action": "progress", "weight_kg": 72.5, "target_reps": 5,
+                    "note": None, "last_sets_str": "70x5"},
+            "last_sets_str": "70x5",
+        },
+        {"slot": "Triceps", "type": "accessory", "reminder": True},
+    ]
+    msg = _format_session_plan_push("Chest", plan)
+    assert "Chest day" in msg
+    assert "Bench Press" in msg
+    assert "72.5" in msg
+    assert "Triceps" in msg
+
+
+def test_send_session_plan_empty_plan_no_send():
+    from pipeline.notify import send_session_plan
+    with patch("pipeline.notify.send_notification") as mock_send:
+        result = send_session_plan({"plan_available": False})
+    assert result is False
+    mock_send.assert_not_called()
+
+
+def test_send_session_plan_none_no_send():
+    from pipeline.notify import send_session_plan
+    with patch("pipeline.notify.send_notification") as mock_send:
+        result = send_session_plan(None)
+    assert result is False
+    mock_send.assert_not_called()
+
+
+def test_send_session_plan_exception_does_not_propagate():
+    from pipeline.notify import send_session_plan
+    data = {
+        "plan_available": True, "split": "Chest",
+        "plan": [{"slot": "Bench press", "type": "main", "reminder": True}],
+    }
+    with patch("pipeline.notify.send_notification", side_effect=Exception("network down")):
+        result = send_session_plan(data)
+    assert result is False

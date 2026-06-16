@@ -33,6 +33,58 @@ def send_notification(message, title="Voice Journal", priority="default"):
         return False
 
 
+def send_session_plan(data: dict) -> bool:
+    """Push today's prescribed session plan via ntfy. Best-effort, never raises.
+
+    data: output of debrief.collectors.workout_collector.collect_session_plan
+    Returns True if the push succeeded, False otherwise (disabled, empty, or error).
+    """
+    try:
+        if not data or not data.get("plan_available"):
+            return False
+        split = data.get("split", "")
+        plan  = data.get("plan", [])
+        if not plan:
+            return False
+        line = _format_session_plan_push(split, plan)
+        if not line:
+            return False
+        return send_notification(line, title="Today's session")
+    except Exception as exc:
+        logger.warning("send_session_plan failed: %s", exc)
+        return False
+
+
+def _format_session_plan_push(split: str, plan: list) -> str:
+    """Compact text for the push notification: slot lines joined by newlines."""
+    lines = [f"{split} day"]
+    for slot in plan:
+        slot_name = slot.get("slot", "?")
+        if slot.get("reminder"):
+            lines.append(f"  {slot_name} — reminder")
+        elif "rec" in slot:
+            rec        = slot["rec"]
+            exercise   = slot.get("exercise") or slot_name
+            last       = slot.get("last_sets_str", "")
+            weight_kg  = rec.get("weight_kg")
+            target_reps = rec.get("target_reps")
+            action     = rec.get("action", "")
+            if action == "no_recommendation":
+                lines.append(f"  {exercise} (last {last})" if last else f"  {exercise}")
+            elif weight_kg is not None:
+                tgt = f"{weight_kg}×{target_reps}" if target_reps else f"{weight_kg} kg"
+                lines.append(f"  {exercise} → {tgt}" + (f" (last {last})" if last else ""))
+            elif target_reps is not None:
+                lines.append(f"  {exercise} → BW×{target_reps}" + (f" (last {last})" if last else ""))
+            else:
+                lines.append(f"  {exercise} (last {last})" if last else f"  {exercise}")
+        else:
+            exercise  = slot.get("exercise") or slot_name
+            last      = slot.get("last_sets_str", "")
+            lines.append(f"  {exercise} (last {last})" if last else f"  {exercise}")
+    return "\n".join(lines)
+
+
 def send_batch_summary(workout, tasks, events, bodyweight, transcripts, *, bw_rejected=None):
     """Build and send a one-line push notification summarising the upload batch.
 
