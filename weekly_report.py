@@ -83,10 +83,16 @@ logging.basicConfig(
 log = logging.getLogger("weekly_report")
 
 try:
-    from analytics import compute_metrics, epley_1rm, identify_benchmark
+    from analytics import compute_metrics, epley_1rm, identify_benchmark, score_adherence
     _ANALYTICS_AVAILABLE = True
 except ImportError:
     _ANALYTICS_AVAILABLE = False
+
+try:
+    from pipeline.plan_config import load_plan_config
+    _PLAN_CONFIG_AVAILABLE = True
+except ImportError:
+    _PLAN_CONFIG_AVAILABLE = False
 
 from models import parse_workout_entry
 from pipeline.notion_client import fetch_bodyweight_entries, fetch_metrics_entries
@@ -404,6 +410,33 @@ def iso_week(date_str: str) -> str:
         return f"{d.isocalendar()[0]}-W{d.isocalendar()[1]:02d}"
     except ValueError:
         return "unknown"
+
+
+def _build_adherence_line(adh: dict) -> str:
+    """Build a human-readable adherence summary from score_adherence() output.
+
+    Returns empty string when total == 0 (no scorable data).
+    Example: 'Adherence: 6/9 hit target · 2 beat · 1 missed (Bench 70×5 → planned 72.5×5)'
+    """
+    if not adh or adh.get("total", 0) == 0:
+        return ""
+
+    total   = adh["total"]
+    hit     = adh["hit"]
+    beat    = adh["beat"]
+    missed  = adh["missed"]
+
+    missed_examples = [
+        f"{d['exercise']} {d['actual']} → planned {d['planned']}"
+        for d in adh.get("detail", [])
+        if d.get("outcome") == "missed"
+    ]
+    example = f" ({missed_examples[0]})" if missed_examples else ""
+
+    return (
+        f"Adherence: {hit + beat}/{total} hit target "
+        f"· {beat} beat · {missed} missed{example}"
+    )
 
 
 def format_for_trainer(entries: list[dict]) -> str:
@@ -1559,9 +1592,36 @@ def main():
     except Exception as exc:
         log.warning(f"Metrics fetch failed (non-fatal): {exc}")
 
+    # Plan adherence (alongside existing e1RM/PR/plateau trends — omit cleanly if no config or no data)
+    adherence_line = ""
+    if _ANALYTICS_AVAILABLE and _PLAN_CONFIG_AVAILABLE:
+        try:
+            plan_cfg = load_plan_config()
+            if plan_cfg:
+                seen_slots: set = set()
+                all_slots: list = []
+                for split_tpl in plan_cfg.get("templates", {}).values():
+                    for slot_def in split_tpl:
+                        slot_name = slot_def.get("slot", "")
+                        if slot_name not in seen_slots:
+                            seen_slots.add(slot_name)
+                            all_slots.append(slot_def)
+                adh = score_adherence(entries, args.weeks * 7, all_slots)
+                adherence_line = _build_adherence_line(adh)
+                if adherence_line:
+                    log.info(f"Plan adherence: {adherence_line}")
+                else:
+                    log.info("Plan adherence: not enough scorable data")
+            else:
+                log.info("Plan adherence: no plan config — section omitted")
+        except Exception as exc:
+            log.warning(f"Plan adherence scoring failed (non-fatal): {exc}")
+
     workout_section += bw_prompt_section + muscle_prompt_section + sleep_energy_section
     if sleep_correlation_line:
         workout_section += f"\n\n{sleep_correlation_line}"
+    if adherence_line:
+        workout_section += f"\n\n## Plan Adherence\n{adherence_line}"
 
     if journal_entries:
         journal_section = f"\n\n## Daily Journal Entries (last {args.weeks} weeks)\n"

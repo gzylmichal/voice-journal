@@ -18,6 +18,10 @@ import logging
 from datetime import datetime, date
 from pathlib import Path
 
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+
 from config import load_config
 from collectors import weather as weather_mod
 from collectors import news as news_mod
@@ -27,11 +31,16 @@ from collectors import notion_collector as notion_mod
 from collectors import binance_collector as binance_mod
 from collectors import airquality_collector as aqi_mod
 from collectors import history_collector as history_mod
-from collectors.workout_collector import collect_today_workout, collect_training_suggestion
+from collectors.workout_collector import collect_today_workout, collect_training_suggestion, collect_session_plan
 from collectors import task_collector as task_mod
 from synthesis import synthesize_tldr
 from formatter import render_email
 from sender import send_email
+
+try:
+    from pipeline.notify import send_session_plan as _send_session_plan
+except ImportError:
+    _send_session_plan = None
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -126,6 +135,20 @@ def main():
         logger.warning("  ✗ training suggestion failed: %s", exc)
         training_suggestion = None
 
+    logger.info("Collecting: session plan")
+    try:
+        session_plan = collect_session_plan(cfg)
+        logger.info("  ✓ session plan collected (available=%s)", session_plan.get("plan_available"))
+    except Exception as exc:
+        logger.warning("  ✗ session plan failed: %s", exc)
+        session_plan = None
+
+    if session_plan and session_plan.get("plan_available") and _send_session_plan is not None:
+        try:
+            _send_session_plan(session_plan)
+        except Exception as exc:
+            logger.warning("session plan push failed (non-fatal): %s", exc)
+
     results = run_collectors(cfg)
     successful = sum(1 for v in results.values() if v is not None)
     total = len(results)
@@ -167,6 +190,7 @@ def main():
         history=results.get("history"),
         stale_tasks=results.get("stale_tasks"),
         training_suggestion=training_suggestion,
+        session_plan=session_plan,
     )
 
     if args.preview:

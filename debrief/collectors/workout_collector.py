@@ -362,6 +362,152 @@ def to_text(data: dict) -> str:
     return data.get("formatted_text") or _format_for_ai(data.get("entries", []))
 
 
+# ---------------------------------------------------------------------------
+# Session plan collector (Phase N2)
+# ---------------------------------------------------------------------------
+
+def _load_analytics():
+    """Import build_session_plan and next_split from analytics at project root."""
+    try:
+        from analytics import build_session_plan, next_split
+        return build_session_plan, next_split
+    except ImportError:
+        try:
+            sys.path.insert(0, _os.path.abspath(_ANALYTICS_DIR))
+            from analytics import build_session_plan, next_split
+            return build_session_plan, next_split
+        except ImportError:
+            return None, None
+
+
+def _load_plan_config_fn():
+    try:
+        from pipeline.plan_config import load_plan_config
+        return load_plan_config
+    except ImportError:
+        try:
+            sys.path.insert(0, _os.path.abspath(_ANALYTICS_DIR))
+            from pipeline.plan_config import load_plan_config
+            return load_plan_config
+        except ImportError:
+            return None
+
+
+def collect_session_plan(cfg: dict) -> dict:
+    """Build the prescribed session plan for today from workout history + plan config.
+
+    Returns:
+        {configured: True, plan_available: True, split: str, plan: list[dict]}
+        {configured: True, plan_available: False}   — no config / no history / no split
+        {configured: False}                          — Notion not configured
+    """
+    api_key = cfg.get("notion_api_key", "")
+    db_id   = cfg.get("notion_workout_db_id", "")
+    if not api_key or not db_id:
+        return {"configured": False}
+
+    build_session_plan, next_split_fn = _load_analytics()
+    load_plan_config = _load_plan_config_fn()
+
+    if build_session_plan is None or load_plan_config is None:
+        logger.warning("session_plan: analytics or plan_config not importable — section omitted")
+        return {"configured": True, "plan_available": False}
+
+    plan_cfg = load_plan_config()
+    if plan_cfg is None:
+        logger.info("session_plan: no plan config — section omitted")
+        return {"configured": True, "plan_available": False}
+
+    try:
+        history = collect_workout(cfg, weeks=8)
+    except Exception as exc:
+        logger.warning("session_plan: history fetch failed: %s", exc)
+        return {"configured": True, "plan_available": False}
+
+    entries = history.get("entries", [])
+    cycle = plan_cfg.get("cycle", [])
+    templates = plan_cfg.get("templates", {})
+
+    split = next_split_fn(entries, cycle)
+    if not split:
+        logger.info("session_plan: could not determine next split")
+        return {"configured": True, "plan_available": False}
+
+    template = templates.get(split)
+    if not template:
+        logger.info("session_plan: no template for split %r", split)
+        return {"configured": True, "plan_available": False}
+
+    try:
+        plan = build_session_plan(entries, split, template)
+    except Exception as exc:
+        logger.warning("session_plan: build failed: %s", exc)
+        return {"configured": True, "plan_available": False}
+
+    if not plan:
+        return {"configured": True, "plan_available": False}
+
+    return {"configured": True, "plan_available": True, "split": split, "plan": plan}
+
+
+def render_session_plan_text(data: dict) -> str:
+    """Compact single-line rendering of a session plan dict."""
+    if not data or not data.get("plan_available"):
+        return ""
+    split = data.get("split", "")
+    plan  = data.get("plan", [])
+    return _format_plan_line(split, plan)
+
+
+def _format_plan_line(split: str, plan: list) -> str:
+    """'Chest day → Bench 72.5×5 (last 70×5) · Pull-ups BW×9 (last BW×8) · Triceps + Biceps'"""
+    main_parts: list = []
+    reminder_names: list = []
+
+    for slot in plan:
+        if slot.get("reminder"):
+            reminder_names.append(slot.get("slot", "?"))
+        elif "rec" in slot:
+            main_parts.append(_format_slot_with_rec(slot))
+        else:
+            # too few sessions — last numbers only
+            exercise = slot.get("exercise") or slot.get("slot", "?")
+            last = slot.get("last_sets_str", "")
+            main_parts.append(f"{exercise} (last {last})" if last else exercise)
+
+    parts = main_parts[:]
+    if reminder_names:
+        parts.append(" + ".join(reminder_names))
+
+    day_label = f"{split} day"
+    return (day_label + " → " + " · ".join(parts)) if parts else day_label
+
+
+def _format_slot_with_rec(slot: dict) -> str:
+    rec      = slot["rec"]
+    exercise = slot.get("exercise") or slot.get("slot", "?")
+    last     = slot.get("last_sets_str", "")
+    action   = rec.get("action", "")
+    weight_kg    = rec.get("weight_kg")
+    target_reps  = rec.get("target_reps")
+    note         = rec.get("note", "") or ""
+
+    if action == "no_recommendation":
+        return f"{exercise} (last {last})" if last else exercise
+
+    if weight_kg is not None:
+        target_str = f"{weight_kg}×{target_reps}" if target_reps else f"{weight_kg} kg"
+    elif target_reps is not None:
+        # BW exercise — format as BW×target_reps
+        target_str = f"BW×{target_reps}"
+    else:
+        return f"{exercise} (last {last})" if last else exercise
+
+    suffix = f" {note}" if note else ""
+    last_part = f" (last {last})" if last else ""
+    return f"{exercise} {target_str}{suffix}{last_part}"
+
+
 def generate_progress_chart(workout_data: dict) -> str:
     """
     Generate a key-lifts progress line chart for the last 8 weeks.

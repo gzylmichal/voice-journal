@@ -8,6 +8,7 @@ Public interface:
 """
 
 import logging
+import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -703,6 +704,277 @@ def _compute_rpe_signals(entries: list[dict], strength_progression: dict) -> dic
         "fatigue_flags":       fatigue_flags,
         "pain_patterns":       pain_patterns,
     }
+
+
+def match_slot(exercise_name: str, slots: list[dict]) -> "dict | None":
+    """Return the slot dict whose keyword best matches exercise_name, or None.
+
+    Matching rules:
+    - Case-insensitive.
+    - A keyword matches only when it begins at a word boundary in the name
+      (regex \\b + re.escape(keyword)), so "row" does NOT match "narrow".
+    - Longest matched keyword wins across all slots (prevents "curl" stealing
+      "wrist curl" exercises from the Forearms slot).
+    """
+    name_lower = exercise_name.lower()
+    best_slot: "dict | None" = None
+    best_len: int = -1
+
+    for slot in slots:
+        for keyword in slot.get("match", []):
+            kw_lower = keyword.lower()
+            if re.search(r"\b" + re.escape(kw_lower), name_lower):
+                if len(kw_lower) > best_len:
+                    best_len = len(kw_lower)
+                    best_slot = slot
+
+    return best_slot
+
+
+def next_split(entries: list[dict], cycle: list[str]) -> "str | None":
+    """Return the next split in the cycle after the most recently completed in-cycle session.
+
+    - Off-cycle sessions (Arms, Other, or anything not in cycle) are ignored.
+    - No in-cycle history (or empty entries) → cycle[0].
+    - Cycle wraps: after the last element, returns cycle[0].
+    """
+    if not cycle:
+        return None
+
+    in_cycle = {s.lower(): s for s in cycle}
+    last_in_cycle: "str | None" = None
+
+    for entry in entries:
+        session_label = (entry.get("session") or "").strip()
+        if session_label.lower() in in_cycle:
+            last_in_cycle = in_cycle[session_label.lower()]
+
+    if last_in_cycle is None:
+        return cycle[0]
+
+    idx = cycle.index(last_in_cycle)
+    return cycle[(idx + 1) % len(cycle)]
+
+
+def build_session_plan(
+    entries: list[dict],
+    split: str,
+    template: list[dict],
+) -> list[dict]:
+    """Build a prescribed session plan for `split` from workout history.
+
+    Pure function — no I/O, no LLM.
+
+    For each slot in `template`:
+    - Find all entries whose exercise matches the slot via match_slot.
+    - Among matches, pick the variation done most recently.
+    - Gather that variation's full history, run recommend_progression.
+    - main slot, ≥2 sessions → {slot, type, exercise, rec, last_sets_str}
+    - main slot, <2 sessions → {slot, type, exercise, last_sets_str, suggestion: None}
+    - main slot, no history → {slot, type, reminder: True}
+    - accessory slot, ≥2 sessions → {slot, type, exercise, rec, last_sets_str}
+    - accessory slot, <2 sessions or no history → {slot, type, reminder: True}
+
+    Returns ordered list of slot dicts matching template order.
+    """
+    slot_plans: list[dict] = []
+
+    for slot_def in template:
+        slot_name  = slot_def.get("slot", "")
+        slot_type  = slot_def.get("type", "main")
+
+        # Collect all entries that match this slot
+        matched: list[dict] = [
+            e for e in entries
+            if match_slot(e.get("exercise") or "", [slot_def]) is not None
+        ]
+
+        if not matched:
+            slot_plans.append({"slot": slot_name, "type": slot_type, "reminder": True})
+            continue
+
+        # Pick the variation (exercise name) done most recently
+        matched_sorted = sorted(matched, key=lambda e: e.get("date") or "")
+        latest_exercise = matched_sorted[-1].get("exercise") or ""
+
+        # Gather full history for that specific variation
+        variation_history = [
+            e for e in matched_sorted
+            if (e.get("exercise") or "").lower() == latest_exercise.lower()
+        ]
+
+        rec = recommend_progression(variation_history)
+        last_sets_str = rec.get("last_sets_str", "")
+
+        if len(variation_history) < 2:
+            if slot_type == "accessory":
+                slot_plans.append({"slot": slot_name, "type": slot_type, "reminder": True})
+            else:
+                slot_plans.append({
+                    "slot": slot_name, "type": slot_type,
+                    "exercise": latest_exercise,
+                    "last_sets_str": last_sets_str,
+                    "suggestion": None,
+                })
+        else:
+            slot_plans.append({
+                "slot": slot_name, "type": slot_type,
+                "exercise": latest_exercise,
+                "rec": rec,
+                "last_sets_str": last_sets_str,
+            })
+
+    return slot_plans
+
+
+def score_adherence(
+    entries: list[dict],
+    window_days: int,
+    templates: list[dict],
+) -> dict:
+    """Score planned-vs-actual adherence for main-slot exercises in the window.
+
+    For each session within window_days, for each exercise that:
+      - matches a 'main'-type slot in templates
+      - has ≥ 2 prior sessions (so a suggestion existed)
+    Recomputes what recommend_progression would have suggested from history
+    strictly before that session, then compares to the actual top set.
+
+    Outcome categories:
+      hit  — actual top weight ≥ rec_weight AND actual top reps ≥ rec_reps
+              (but not a beat)
+      beat — actual top weight > rec_weight, OR
+             actual top weight ≥ rec_weight AND actual top reps > rec_reps
+      missed — fell short of hit/beat
+
+    Exercises with action='no_recommendation' or no comparable target are skipped.
+
+    Returns:
+        {"total": int, "hit": int, "beat": int, "missed": int, "detail": list}
+    """
+    _empty = {"total": 0, "hit": 0, "beat": 0, "missed": 0, "detail": []}
+
+    if not entries or not templates:
+        return _empty
+
+    main_slots = [s for s in templates if s.get("type") == "main"]
+    if not main_slots:
+        return _empty
+
+    today = date.today()
+    cutoff = today - timedelta(days=window_days)
+
+    # Group all entries by exercise name (lower-cased) sorted by date
+    by_exercise: dict[str, list[dict]] = defaultdict(list)
+    for e in entries:
+        name = (e.get("exercise") or "").strip()
+        if not name:
+            continue
+        by_exercise[name.lower()].append(e)
+
+    for key in by_exercise:
+        by_exercise[key].sort(key=lambda e: e.get("date") or "")
+
+    total = hit = beat = missed = 0
+    detail: list[dict] = []
+
+    # Collect in-window entries for main slots, ordered by date
+    in_window: list[dict] = []
+    for e in entries:
+        date_str = e.get("date") or ""
+        try:
+            date_obj = datetime.fromisoformat(date_str).date()
+        except (ValueError, TypeError):
+            continue
+        if date_obj < cutoff:
+            continue
+        exercise_name = (e.get("exercise") or "").strip()
+        if not exercise_name:
+            continue
+        if match_slot(exercise_name, main_slots) is None:
+            continue
+        in_window.append((date_obj, date_str, exercise_name, e))
+
+    in_window.sort(key=lambda t: t[0])
+
+    for date_obj, date_str, exercise_name, actual_entry in in_window:
+        key = exercise_name.lower()
+        all_sessions = by_exercise.get(key, [])
+
+        # Prior sessions strictly before this date
+        prior = [s for s in all_sessions if (s.get("date") or "") < date_str]
+
+        if len(prior) < 2:
+            continue
+
+        rec = recommend_progression(prior)
+        if rec.get("action") == "no_recommendation":
+            continue
+
+        rec_weight = rec.get("weight_kg")
+        rec_reps = rec.get("target_reps")
+
+        # Parse actual top set from this session
+        actual_sets_str = actual_entry.get("weight") or ""
+        is_bw, _ = _detect_bw(actual_sets_str)
+
+        if is_bw:
+            if rec_reps is None:
+                continue
+            try:
+                actual_reps = int(actual_entry.get("reps") or 0)
+            except (TypeError, ValueError):
+                continue
+            if actual_reps <= 0:
+                continue
+            if actual_reps > rec_reps:
+                outcome = "beat"
+            elif actual_reps >= rec_reps:
+                outcome = "hit"
+            else:
+                outcome = "missed"
+            detail.append({
+                "exercise": exercise_name,
+                "date": date_str,
+                "outcome": outcome,
+                "actual": f"BW×{actual_reps}",
+                "planned": f"BW×{rec_reps}",
+            })
+        else:
+            if rec_weight is None or rec_reps is None:
+                continue
+            valid_sets = [(w, r) for w, r in parse_sets_string(actual_sets_str) if w > 0 and r > 0]
+            if not valid_sets:
+                continue
+            actual_top_w = max(w for w, r in valid_sets)
+            actual_top_r = max(r for w, r in valid_sets if w == actual_top_w)
+
+            if actual_top_w > rec_weight:
+                outcome = "beat"
+            elif actual_top_w >= rec_weight and actual_top_r > rec_reps:
+                outcome = "beat"
+            elif actual_top_w >= rec_weight and actual_top_r >= rec_reps:
+                outcome = "hit"
+            else:
+                outcome = "missed"
+
+            detail.append({
+                "exercise": exercise_name,
+                "date": date_str,
+                "outcome": outcome,
+                "actual": f"{actual_top_w:.4g}×{actual_top_r}",
+                "planned": f"{rec_weight:.4g}×{rec_reps}",
+            })
+
+        total += 1
+        if outcome == "hit":
+            hit += 1
+        elif outcome == "beat":
+            beat += 1
+        else:
+            missed += 1
+
+    return {"total": total, "hit": hit, "beat": beat, "missed": missed, "detail": detail}
 
 
 def compute_metrics(entries: list[dict], weeks: int) -> dict:
