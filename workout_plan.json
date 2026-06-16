@@ -1,0 +1,39 @@
+{
+  "_comment": "Daily session planner config. cycle = completion-driven rotation (advances only when a session is completed; Arms/Other are off-cycle and never advance it). Each slot matches history by case-insensitive keyword, so exercise variations resolve to the same slot. type 'main' = named lift (gets a progression target); type 'accessory' = open muscle slot (reminder + progression only if that exercise has >=2 prior sessions).",
+  "cycle": ["Chest", "Deadlift", "Squat"],
+  "rest_day_between": true,
+  "templates": {
+    "Chest": [
+      { "slot": "Bench press",          "type": "main",      "match": ["bench", "bench press", "smith machine bench press", "machine bench press"] },
+      { "slot": "Pull-ups",             "type": "main",      "match": ["pull-up", "pull up", "pullup", "chin-up", "chin up"] },
+      { "slot": "Bulgarian split squat","type": "main",      "match": ["bulgarian", "split squat"] },
+      { "slot": "Triceps",              "type": "accessory", "muscle": "Triceps", "match": ["tricep", "pushdown", "push-down", "skull", "overhead extension"] },
+      { "slot": "Biceps",               "type": "accessory", "muscle": "Biceps",  "match": ["bicep", "curl", "bicep curl", "preacher curl", "hammer curl"] }
+    ],
+    "Deadlift": [
+      { "slot": "Deadlift",             "type": "main",      "match": ["deadlift", "rdl", "romanian"] },
+      { "slot": "Overhead Press",       "type": "main",      "match": ["overhead press", "overhead barbell press", "ohp", "shoulder press", "military"] },
+      { "slot": "Leg extension",        "type": "main",      "match": ["leg extension", "quad extension"] },
+      { "slot": "Triceps",              "type": "accessory", "muscle": "Triceps", "match": ["tricep", "pushdown", "push-down", "skull", "overhead extension"] },
+      { "slot": "Biceps",               "type": "accessory", "muscle": "Biceps",  "match": ["bicep", "curl", "bicep curl", "preacher curl", "hammer curl"] }
+    ],
+    "Squat": [
+      { "slot": "Squat",                "type": "main",      "match": ["squat", "hack-squat", "hack squat"] },
+      { "slot": "Dips",                 "type": "main",      "match": ["dip", "dips", "machine dip", "machine dips"] },
+      { "slot": "Rows",                 "type": "main",      "match": ["row", "rows", "machine row", "machine rows", "cable row"] },
+      { "slot": "Biceps",               "type": "accessory", "muscle": "Biceps",  "match": ["bicep", "curl", "bicep curl", "preacher curl", "hammer curl"] },
+      { "slot": "Triceps",              "type": "accessory", "muscle": "Triceps", "match": ["tricep", "pushdown", "push-down", "skull", "overhead extension"] }
+    ]
+  },
+  "off_cycle": {
+    "Arms": {
+      "rounds": 3,
+      "note": "bicep + tricep + forearms, alternating succession",
+      "slots": [
+        { "slot": "Biceps",   "type": "accessory", "muscle": "Biceps",   "match": ["bicep", "curl"] },
+        { "slot": "Triceps",  "type": "accessory", "muscle": "Triceps",  "match": ["tricep", "pushdown", "push-down", "skull", "overhead extension"] },
+        { "slot": "Forearms", "type": "accessory", "muscle": "Forearms", "match": ["forearm", "forearm curl", "wrist", "wrist curl", "wrist twister", "grip", "reverse curl"] }
+      ]
+    }
+  }
+}

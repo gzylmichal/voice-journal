@@ -1,0 +1,11 @@
+[Unit]
+Description=Voice Journal Weekly Coaching Report — analytics + email
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=journal
+Group=journal
+WorkingDirectory=/opt/voice-journal
+ExecStart=/opt/voice-journal/venv/bin/python3 /opt/voice-journal/weekly_report.py

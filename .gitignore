@@ -8,3 +8,6 @@ venv/
 .venv/
 .DS_Store
 .superpowers/
+
+CC_PROMPT_*.md
+!workout_plan.json

@@ -1,0 +1,11 @@
+[Unit]
+Description=Voice Journal Healthcheck — daily self-test (ntfy push on failure)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=journal
+Group=journal
+WorkingDirectory=/opt/voice-journal
+ExecStart=/opt/voice-journal/venv/bin/python3 /opt/voice-journal/healthcheck.py

@@ -1,33 +1,49 @@
 # Voice Journal VPS
 
-Record throughout the day → VPS processes at **02:00 CET/CEST** → Notion entry ready for morning debrief.
+Record voice memos throughout the day → a VPS transcribes and files them into Notion in
+real time → an overnight pass consolidates the day into a journal entry → morning debrief
+and weekly coaching emails close the loop. Optional push notifications give instant
+feedback after every memo.
 
 ```
-iPhone                              Hetzner VPS (YOUR_VPS_IP)
+iPhone                              Hetzner VPS
 ┌──────────────┐                    ┌──────────────────────────────────────┐
-│ iOS Shortcut │                    │ nginx (80/443)                       │
-│ Record memo  │──── HTTPS POST ───►│ ↓                                    │
-│ (any time)   │                    │ receiver.py (gunicorn :8675)         │
-└──────────────┘                    │  saves .m4a → inbox/                 │
+│ iOS Shortcut │                    │ nginx → receiver.py (gunicorn :8675) │
+│ Record memo  │──── HTTPS POST ───►│  saves .m4a → inbox/ → triggers      │
+│ (any time)   │                    │  voice_journal.py --mode upload       │
+└──────────────┘                    │   Groq Whisper → transcribe          │
+                                    │   1 LLM pass → workout / tasks /      │
+                                    │     events / bodyweight / metrics /   │
+                                    │     query                             │
+                                    │   → Notion + GCal (real time)         │
+                                    │   → ntfy push (brief + summary)       │
                                     │                                      │
-                                    │ 02:00 CET — systemd timer            │
-                                    │ voice_journal.py --mode overnight    │
-                                    │  Groq Whisper → transcribe           │
-                                    │  Claude/Gemini → format + extract    │
-                                    │  → .md archive + Notion entry        │
-                                    │                                      │
-                                    │ 06:30 daily — systemd timer          │
-                                    │ debrief/main.py                      │
-                                    │  8 collectors (weather, calendar,    │
-                                    │  news, crypto, AQI, history …)       │
-                                    │  Gemini TL;DR → HTML email           │
-                                    │                                      │
-                                    │ 06:30 Sunday — systemd timer         │
-                                    │ weekly_report.py                     │
-                                    │  Workout analytics + journal digest  │
-                                    │  → Notion page + Excel + HTML email  │
+                                    │ 02:00 — voice_journal --mode overnight│
+                                    │   buffer → journal MD → Notion        │
+                                    │ 05:30 — debrief/main.py (email)       │
+                                    │ 06:30 Sun — weekly_report.py          │
+                                    │ 08:00 — healthcheck.py (self-test)    │
                                     └──────────────────────────────────────┘
 ```
+
+> Memos are processed **per upload** (within ~10–20 s), not only overnight. The overnight
+> pass only consolidates the day's buffer into one journal entry; it no longer re-extracts.
+
+---
+
+## Pipeline at a glance
+
+A single LLM call per memo batch (`extract_all`) returns one JSON object with six
+sections, so the categories never compete for the same numbers:
+
+| Section | Goes to | Notes |
+|---|---|---|
+| `workout` | Notion Workout Log | per-set detail, RPE, pain note, bodyweight-exercise load |
+| `tasks` | Notion Task DB | type/priority/due date |
+| `events` | Google Calendar | resolved relative dates |
+| `bodyweight` | Notion Bodyweight Log | keyword pre-filter + plausibility validation |
+| `metrics` | Notion Daily metrics | qualitative sleep/energy/note (never numbers) |
+| `query` | ntfy push only | history question — isolated, never touches the journal |
 
 ---
 
@@ -36,50 +52,43 @@ iPhone                              Hetzner VPS (YOUR_VPS_IP)
 ```
 voice_journal_vps/
 │
-├── voice_journal.py          # Main pipeline: upload (daytime) + overnight consolidation
-├── receiver.py               # Flask/gunicorn endpoint that accepts audio POSTs
+├── voice_journal.py          # Pipeline: upload (real-time writes) + overnight consolidation
+├── receiver.py               # gunicorn endpoint that accepts audio POSTs
 ├── weekly_report.py          # Sunday coaching report (analytics, charts, email)
+├── analytics.py              # e1RM, adherence, volume, PRs, plateau, progression rules
 ├── cli.py                    # Interactive terminal menu (questionary + rich)
-├── ai_client.py              # Provider abstraction: Claude → Gemini → Llama fallback
-├── analytics.py              # Workout analytics engine (e1RM, adherence, volume)
-├── models.py                 # parse_workout_entry — Notion page → typed dict
-├── backfill_workouts.py      # Reprocess historical audio to fill Notion workout DB
+├── ai_client.py              # Provider abstraction: Claude → Gemini → Llama, unified retries
+├── models.py                 # Notion page → typed dict
+├── backfill_workouts.py      # Reprocess archived audio to fill the Workout DB
+├── healthcheck.py            # 08:00 daily self-test → ntfy push on failure
 ├── gcal_auth.py              # One-time OAuth setup for Google Calendar
+├── deploy.sh                 # One-shot consistent deploy to the VPS (rsync, protects .env/data)
 │
-├── pipeline/                 # Voice journal sub-modules
-│   ├── config.py             # All env vars and path constants
-│   ├── audio.py              # Groq Whisper transcription
+├── pipeline/
+│   ├── config.py             # All env vars + path constants (single source of truth)
+│   ├── audio.py              # Groq Whisper transcription + segment hallucination filter
 │   ├── journal.py            # Format transcripts → markdown journal entry
-│   ├── extractors.py         # Extract workouts, tasks, calendar events from text
-│   ├── prompts.py            # All LLM prompts (journal, workout, tasks, events)
-│   ├── notion_client.py      # Notion DB writes + bodyweight fetch
+│   ├── extractors.py         # extract_all + per-category wrappers, merge_buffered_workouts
+│   ├── prompts.py            # Unified EXTRACTION_SYSTEM_PROMPT + journal prompt
+│   ├── notion_client.py      # Notion writes + fetches (workout/bodyweight/metrics/prior session)
+│   ├── brief.py              # Pre-workout brief (deterministic progression, no LLM)
+│   ├── notify.py             # ntfy transport + batch summary formatter
+│   ├── lock.py               # flock-based pipeline lock (concurrency safety)
 │   ├── gcal_client.py        # Google Calendar event creation
-│   └── storage.py            # Buffer (daily JSON) read/write + markdown archive
+│   └── storage.py            # Daily JSON buffer + markdown archive + raw-transcript audit
 │
 ├── debrief/                  # Morning Debrief email system
-│   ├── main.py               # Entry point: collect → synthesize → render → send
-│   ├── config.py             # Reads parent .env with dual key-name fallbacks
-│   ├── formatter.py          # HTML email renderer (all sections)
-│   ├── sender.py             # SMTP send (Zoho)
-│   ├── synthesis.py          # Gemini TL;DR + weekly snapshot generation
-│   └── collectors/
-│       ├── weather.py        # Open-Meteo current conditions + forecast
-│       ├── calendar_collector.py  # Google Calendar via service account JSON
-│       ├── notion_collector.py    # Today's Notion journal entry (blocks → HTML)
-│       ├── news.py           # RSS feeds (feedparser)
-│       ├── currency.py       # Fiat FX rates
-│       ├── binance_collector.py   # Crypto prices
-│       ├── airquality_collector.py  # Open-Meteo European AQI, PM2.5, PM10
-│       ├── history_collector.py   # "On this day" events (muffinlabs API)
-│       └── workout_collector.py   # Notion Workout DB (today + weekly)
+│   ├── main.py · config.py · formatter.py · sender.py · synthesis.py
+│   └── collectors/           # weather, calendar, notion, news, currency, crypto,
+│                             #   airquality, history, workout (PRs), task (aging)
 │
-├── tests/                    # pytest suite
-├── test_analytics.py         # Analytics unit tests (root, run: pytest test_analytics.py)
-├── test_cli.py               # CLI unit tests
+├── tests/                    # pytest suite (unit + smoke wiring)
+├── smoke_test.py             # End-to-end wiring check (upload → overnight → query)
+├── test_analytics.py · test_cli.py
 │
-├── .env.example              # Template for all required keys
-├── vps-reference.md          # Server details, SSH config, deploy commands
-└── setup.sh                  # First-time VPS provisioning script
+├── .env.example · setup.sh · vps-reference.md
+├── voice-journal-debrief.service / .timer   # systemd units for the morning email
+└── IMPROVEMENT_PLAN*.md      # historical implementation plans (done)
 ```
 
 ---
@@ -90,98 +99,107 @@ voice_journal_vps/
 
 | Mode | Trigger | What it does |
 |---|---|---|
-| `--mode upload` | CLI / manual | Transcribes inbox audio → buffers to daily JSON |
-| `--mode overnight` | 02:00 timer | Consolidates buffer → journal MD → Notion + archive |
+| `--mode upload` | per upload (receiver) | transcribe → `extract_all` → write Notion/GCal → buffer → ntfy push |
+| `--mode overnight` | 02:00 timer | consolidate the day's buffer → journal MD → Notion (no re-extraction) |
 
-Overnight extracts: workout entries → Notion Workout DB, tasks → Notion Task DB, calendar events → Google Calendar.
+Both modes hold a `flock` pipeline lock so concurrent uploads can't double-write or
+corrupt the buffer. Upload writes are real-time; the overnight pass also retries any
+upload-time writes that failed.
 
 ### `weekly_report.py`
 
-Runs every Sunday. Fetches last 4 weeks of workout data + journal entries, runs AI coaching analysis, then:
-- Posts formatted report to a Notion trainer page
-- Exports full workout history to `reports/workouts.xlsx`
-- Sends HTML email with: estimated 1RMs (Epley), top-set progression SVG chart, muscle group pie chart, AI analysis
-
-Options: `--weeks N`, `--dry-run`, `--preview` (writes `weekly-preview.html`), `--excel`, `--excel-all`
+Sunday. Fetches recent workout + journal data and produces an AI coaching report with:
+estimated 1RMs (Epley), top-set progression chart, a **two-axis bodyweight × strength**
+chart, muscle-group pie, **PR detection**, **plateau flags** (flat e1RM, optionally with
+rising RPE), **gap alerts** (untrained muscle groups), and a **bad-sleep correlation**
+line. Posts to a Notion page, exports `reports/workouts.xlsx`, emails HTML.
+Options: `--weeks N`, `--dry-run`, `--preview`, `--excel`, `--excel-all`.
 
 ### `debrief/main.py`
 
-Runs daily at 06:30. Collects 8 data sources in sequence, synthesizes a TL;DR via Gemini, renders HTML, sends email.
+Daily 05:30. Collects 8 sources + today's workout (with 🏆 PR lines), adds **task-aging**
+("open 12 days, still relevant?") and a **today's training suggestion** (split rotation or
+days-since fallback), synthesizes a TL;DR, renders + sends HTML.
+Options: `--dry-run`, `--preview`, `--collect`.
 
-Sources: weather, calendar, Notion journal, news, currency, crypto, air quality, "on this day"  
-Also fetches today's (or yesterday's) workout and shows it as a table above the journal notes.
+### `healthcheck.py`
 
-Options: `--dry-run` (HTML to stdout), `--preview` (writes `debrief-preview.html`)
+Daily 08:00 self-test. All green → one log line, no email. Any failure → a single
+high-priority ntfy push listing what's broken.
 
 ### `cli.py`
 
-Interactive menu. Run `python3 cli.py` on the VPS (or `ssh vps` then `python3 /opt/voice-journal/cli.py`).
-
-Actions available: process inbox, overnight run, weekly report, debrief send/preview, weekly review send/preview, view inbox/buffer/logs, provider diagnostics, journal search, archive cleanup.
+Interactive menu: process inbox, overnight run, weekly report/preview, debrief
+send/preview, view inbox/buffer/logs, provider diagnostics, journal search, cleanup.
 
 ---
 
 ## Configuration
 
-Single `.env` at project root (`/opt/voice-journal/.env`):
+Single `.env` at `/opt/voice-journal/.env`:
 
 ```
-# Voice Journal
+# Core
 GROQ_API_KEY=
 UPLOAD_TOKEN=
-NOTION_TOKEN=                    # also accepted as NOTION_API_KEY
-NOTION_DATABASE_ID=              # journal DB; also NOTION_JOURNAL_DB_ID
+WHISPER_MODEL=whisper-large-v3-turbo   # whisper-large-v3 = accuracy upgrade path
+ANTHROPIC_API_KEY=                     # optional; Claude used if set
+GOOGLE_API_KEY=                        # also GEMINI_API_KEY
+AI_PROVIDER=auto                       # or claude|gemini|llama
+
+# Notion
+NOTION_TOKEN=                          # also NOTION_API_KEY
+NOTION_DATABASE_ID=                    # journal DB; also NOTION_JOURNAL_DB_ID
 NOTION_WORKOUT_DB_ID=
 NOTION_TASK_DB_ID=
 NOTION_BODYWEIGHT_DB_ID=
-NOTION_TRAINER_PAGE_ID=          # weekly report posts here
-ANTHROPIC_API_KEY=               # optional; Claude used if set
-GOOGLE_API_KEY=                  # also GEMINI_API_KEY
+NOTION_METRICS_DB_ID=                  # Daily metrics DB (sleep/energy)
+NOTION_TRAINER_PAGE_ID=
+
+# Notifications (optional — empty = off)
+NTFY_TOPIC=                            # your unique ntfy.sh topic
+NTFY_SERVER=https://ntfy.sh
 
 # Morning Debrief
-SMTP_HOST=
-SMTP_PORT=587
-SMTP_USER=
-SMTP_PASSWORD=
-EMAIL_FROM=
-EMAIL_TO=
-LATITUDE=
-LONGITUDE=
-TIMEZONE=Europe/Warsaw
-LOCATION_NAME=
+SMTP_HOST= / SMTP_PORT=587 / SMTP_USER= / SMTP_PASSWORD= / EMAIL_FROM= / EMAIL_TO=
+LATITUDE= / LONGITUDE= / TIMEZONE=Europe/Warsaw / LOCATION_NAME=
 GOOGLE_CREDENTIALS_FILE=/opt/voice-journal/debrief/service-account.json
-BINANCE_SYMBOLS=BTCUSDT,ETHUSDT
-CURRENCY_CODES=USD,EUR,GBP
-NEWS_SOURCES=5
-NEWS_ITEMS_PER_SOURCE=3
+TASK_AGING_DAYS=7
 ```
 
-`debrief/config.py` reads this via `python-dotenv` with dual key-name fallbacks so both old and new names work.
+`SMTP_PASSWORD` must be an **app-specific password**. Values with spaces don't need
+quotes in `.env`; if you quote, balance them — an unterminated quote silently swallows
+later lines.
+
+The Notion DBs requiring manual schema: Workout Log needs `RPE` (number) + `Pain note`
+(rich text); a `Daily metrics` DB needs `Date`, `Sleep` (good/ok/bad), `Energy`
+(high/normal/low), `Note`. Code degrades gracefully when an id/property is absent.
 
 ---
 
 ## AI Provider Fallback
 
-`ai_client.py` tries providers in order: **Claude → Gemini → Llama (Groq)**. First available key wins. Set `AI_PROVIDER=claude|gemini|llama` in `.env` to pin a specific one.
-
-Weekly report uses Claude for the coaching analysis when available (better reasoning for prescriptive advice); falls back to Gemini.
+`ai_client.py` tries **Claude → Gemini → Llama (Groq)**; first available key wins, with a
+unified retry loop (3 attempts on 429/5xx/network) across all three. Pin with
+`AI_PROVIDER`. Extraction calls run at `temperature=0`; journal prose at 0.3.
 
 ---
 
 ## Deployment
 
-Files are owned by `journal:journal` on VPS. Deploy workflow:
+Use the one-shot script from your Mac — it pushes the whole tree consistently and never
+touches secrets or runtime data (`.env`, `venv/`, `inbox/`, `buffer/`, `archive/`,
+`reports/`, logs, tokens):
 
 ```bash
-# From Mac
-scp <file> YOUR_USER@YOUR_VPS_IP:/tmp/
-
-# On VPS (run with ! prefix in Claude Code, or SSH in)
-sudo cp /tmp/<file> /opt/voice-journal/<path>
-sudo chown journal:journal /opt/voice-journal/<path>
+./deploy.sh            # uses SSH alias "vps"; override: ./deploy.sh user@host
 ```
 
-The `debrief/` subdirectory lives at `/opt/voice-journal/debrief/` and shares the same venv (`/opt/voice-journal/venv/`).
+It stages to `/tmp/vj-deploy`, installs with `sudo rsync` into `/opt/voice-journal`,
+fixes ownership, restarts the receiver, and runs the smoke test on the box.
+
+> Avoid copying individual files — mismatched versions (e.g. a new `voice_journal.py`
+> against an old `pipeline/config.py`) cause runtime `AttributeError`s. Deploy the tree.
 
 ---
 
@@ -190,8 +208,9 @@ The `debrief/` subdirectory lives at `/opt/voice-journal/debrief/` and shares th
 | Timer | Time | Command |
 |---|---|---|
 | `voice-journal-process.timer` | 02:00 daily | `voice_journal.py --mode overnight` |
-| `voice-journal-debrief.timer` | 06:30 daily | `debrief/main.py` |
+| `voice-journal-debrief.timer` | 05:30 daily | `debrief/main.py` |
 | `voice-journal-weekly.timer` | 06:30 Sunday | `weekly_report.py` |
+| `voice-journal-healthcheck.timer` | 08:00 daily | `healthcheck.py` |
 
 ```bash
 sudo systemctl list-timers | grep voice-journal   # check schedule
@@ -200,16 +219,13 @@ sudo systemctl start voice-journal-process        # trigger manually
 
 ---
 
-## Key Data Flows
+## Testing
 
-**Workout data** lives in two places:
-- **Notion Workout DB** — source of truth, written by `voice_journal.py overnight` + `backfill_workouts.py`
-- Read by: `weekly_report.py` (analytics + charts), `debrief/collectors/workout_collector.py` (today's table in debrief email)
+```bash
+python3 -m pytest tests/ test_analytics.py test_cli.py -q   # unit suite
+python3 smoke_test.py                                       # end-to-end wiring
+```
 
-**Journal data** lives in:
-- **Notion Journal DB** — written by `voice_journal.py overnight`
-- Read by: `debrief/collectors/notion_collector.py` (today's entry), `weekly_report.py` / `fetch_journal_entries()` (weekly digest)
-
-**Google Calendar**:
-- Written by: `voice_journal.py` (extracts events from transcripts via `pipeline/gcal_client.py`)  
-- Read by: `debrief/collectors/calendar_collector.py` (uses service account JSON, not OAuth token)
+The smoke test exercises the full chain on canned data: upload → Notion writes (incl. RPE
+/ pain / bodyweight-vs-bench disambiguation) → overnight journal (asserting no extra
+workout-extraction call) → query memo isolation + answer push.
