@@ -125,7 +125,15 @@ def _call_gemini(
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_message}]}],
-        "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+            # Gemini 2.5 "thinking" tokens count against maxOutputTokens and were
+            # silently consuming the budget, truncating long outputs (e.g. the weekly
+            # coaching report cut off mid-pyramid). Disable so the full budget goes to
+            # the visible response.
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }
     resp = requests.post(
         url,
