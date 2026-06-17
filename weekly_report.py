@@ -160,6 +160,10 @@ Numbered list. Ordered by impact on strength outcomes. Specific and actionable.
 ## Tone
 Direct. Evidence-based. No filler, no hedging, no excessive praise.
 Prescribe specific numbers — "102.5 kg", not "around 100 kg".
+Progression is conservative and plate-realistic. Per step, AT THE SAME REP TARGET:
+upper-body presses (Bench, Overhead Press) and rows increase by AT MOST +2.5 kg;
+lower-body compounds (Squat, Deadlift, leg press) by AT MOST +5 kg. Prefer adding a rep
+before adding load. NEVER suggest a 5 kg jump on a press at unchanged reps. Round to 2.5 kg.
 Motivate when performance genuinely warrants it. Call out missed sessions by name.
 Output clean markdown only. Use ### ONLY for the 6 top-level section headers. Within sections, use **bold** for lift names and emphasis."""
 
@@ -543,7 +547,7 @@ def call_ai(prompt: str) -> str:
         prompt,
         WEEKLY_REPORT_PROMPT,
         label="Weekly report",
-        max_tokens=2048,
+        max_tokens=4096,  # 6-section report; 2048 truncated mid Lift Analysis
     )
 
 
