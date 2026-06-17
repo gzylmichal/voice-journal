@@ -92,7 +92,7 @@ voice_journal_vps/
 │
 ├── .env.example · setup.sh · CHANGELOG.md
 ├── systemd/                  # *.service + *.timer units (process/debrief/weekly/healthcheck)
-└── docs/                     # vps-reference.md, IMPROVEMENT_PLAN_4.md (design notes, done)
+└── docs/                     # vps-reference.md (server + deploy reference)
 ```
 
 ---
