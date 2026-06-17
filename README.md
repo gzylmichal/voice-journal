@@ -90,9 +90,9 @@ voice_journal_vps/
 ├── smoke_test.py             # End-to-end wiring check (upload → overnight → query)
 ├── test_analytics.py · test_cli.py
 │
-├── .env.example · setup.sh · vps-reference.md
-├── voice-journal-debrief.service / .timer   # systemd units for the morning email
-└── IMPROVEMENT_PLAN*.md      # historical implementation plans (done)
+├── .env.example · setup.sh · CHANGELOG.md
+├── systemd/                  # *.service + *.timer units (process/debrief/weekly/healthcheck)
+└── docs/                     # vps-reference.md, IMPROVEMENT_PLAN_4.md (design notes, done)
 ```
 
 ---
@@ -246,6 +246,9 @@ fixes ownership, restarts the receiver, and runs the smoke test on the box.
 | `voice-journal-debrief.timer` | 05:30 daily | `debrief/main.py` |
 | `voice-journal-weekly.timer` | 06:30 Sunday | `weekly_report.py` |
 | `voice-journal-healthcheck.timer` | 08:00 daily | `healthcheck.py` |
+
+Unit files live in `systemd/`; install with
+`sudo cp systemd/*.service systemd/*.timer /etc/systemd/system/ && sudo systemctl daemon-reload`.
 
 ```bash
 sudo systemctl list-timers | grep voice-journal   # check schedule

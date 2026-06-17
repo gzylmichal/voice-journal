@@ -98,7 +98,7 @@ filler-hallucination list must cover both languages. Journal output is English.
 ## Deployment reality
 
 Code in this folder is the source of truth, but it runs at `/opt/voice-journal/`
-on a Hetzner VPS (see `vps-reference.md`). Nothing you change here is live until
+on a Hetzner VPS (see `docs/vps-reference.md`). Nothing you change here is live until
 the owner deploys it. The owner deploys the **whole tree** with `./deploy.sh` (rsync;
 protects `.env`/`venv`/runtime data) — do NOT instruct copying individual files, which
 caused a version-skew bug (a new `voice_journal.py` against an old `pipeline/config.py`).
