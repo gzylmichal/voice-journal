@@ -55,24 +55,28 @@ voice_journal_vps/
 ├── voice_journal.py          # Pipeline: upload (real-time writes) + overnight consolidation
 ├── receiver.py               # gunicorn endpoint that accepts audio POSTs
 ├── weekly_report.py          # Sunday coaching report (analytics, charts, email)
-├── analytics.py              # e1RM, adherence, volume, PRs, plateau, progression rules
+├── analytics.py              # e1RM, volume, PRs, plateau, progression, session classify,
+│                             #   cycle resolver, session plan, adherence
 ├── cli.py                    # Interactive terminal menu (questionary + rich)
 ├── ai_client.py              # Provider abstraction: Claude → Gemini → Llama, unified retries
 ├── models.py                 # Notion page → typed dict
 ├── backfill_workouts.py      # Reprocess archived audio to fill the Workout DB
+├── backfill_sessions.py      # Relabel historical Session by day via classify_session (idempotent; --apply)
 ├── healthcheck.py            # 08:00 daily self-test → ntfy push on failure
 ├── gcal_auth.py              # One-time OAuth setup for Google Calendar
 ├── deploy.sh                 # One-shot consistent deploy to the VPS (rsync, protects .env/data)
+├── workout_plan.json         # Daily planner config: cycle + per-split exercise templates
 │
 ├── pipeline/
 │   ├── config.py             # All env vars + path constants (single source of truth)
+│   ├── plan_config.py        # Load/validate workout_plan.json (graceful when absent)
 │   ├── audio.py              # Groq Whisper transcription + segment hallucination filter
 │   ├── journal.py            # Format transcripts → markdown journal entry
 │   ├── extractors.py         # extract_all + per-category wrappers, merge_buffered_workouts
 │   ├── prompts.py            # Unified EXTRACTION_SYSTEM_PROMPT + journal prompt
-│   ├── notion_client.py      # Notion writes + fetches (workout/bodyweight/metrics/prior session)
+│   ├── notion_client.py      # Notion writes + fetches; Session classified from exercises
 │   ├── brief.py              # Pre-workout brief (deterministic progression, no LLM)
-│   ├── notify.py             # ntfy transport + batch summary formatter
+│   ├── notify.py             # ntfy transport + batch summary + session-plan push
 │   ├── lock.py               # flock-based pipeline lock (concurrency safety)
 │   ├── gcal_client.py        # Google Calendar event creation
 │   └── storage.py            # Daily JSON buffer + markdown archive + raw-transcript audit
@@ -111,15 +115,18 @@ upload-time writes that failed.
 Sunday. Fetches recent workout + journal data and produces an AI coaching report with:
 estimated 1RMs (Epley), top-set progression chart, a **two-axis bodyweight × strength**
 chart, muscle-group pie, **PR detection**, **plateau flags** (flat e1RM, optionally with
-rising RPE), **gap alerts** (untrained muscle groups), and a **bad-sleep correlation**
-line. Posts to a Notion page, exports `reports/workouts.xlsx`, emails HTML.
+rising RPE), **gap alerts** (untrained muscle groups), a **bad-sleep correlation** line,
+and **planned-vs-actual adherence** (hit / beat / missed against the daily plan). Posts to
+a Notion page, exports `reports/workouts.xlsx`, emails HTML.
 Options: `--weeks N`, `--dry-run`, `--preview`, `--excel`, `--excel-all`.
 
 ### `debrief/main.py`
 
-Daily 05:30. Collects 8 sources + today's workout (with 🏆 PR lines), adds **task-aging**
-("open 12 days, still relevant?") and a **today's training suggestion** (split rotation or
-days-since fallback), synthesizes a TL;DR, renders + sends HTML.
+Daily 05:30. Collects 8 sources + yesterday's workout (same-exercise rows merged, with
+🏆 PR lines), **task-aging** ("open 12 days, still relevant?"), and — when
+`workout_plan.json` is present — a full **"Today's session"** plan (the next split in your
+cycle with a per-exercise target); otherwise it falls back to a one-line split-rotation
+suggestion. Synthesizes a TL;DR, renders + sends HTML.
 Options: `--dry-run`, `--preview`, `--collect`.
 
 ### `healthcheck.py`
@@ -131,6 +138,31 @@ high-priority ntfy push listing what's broken.
 
 Interactive menu: process inbox, overnight run, weekly report/preview, debrief
 send/preview, view inbox/buffer/logs, provider diagnostics, journal search, cleanup.
+
+---
+
+## Daily session planner
+
+Deterministic (no LLM). Configured in `workout_plan.json`:
+
+- **Cycle** — a completion-driven rotation (e.g. `Chest → Deadlift → Squat`). "Next
+  session" is the successor of the most recent *completed* in-cycle session; missing a day
+  never advances it, and off-cycle Arms/Other sessions are ignored (`analytics.next_split`).
+- **Templates** — a fixed exercise list per split, with **keyword slots** that tolerate
+  variations (squat↔hack-squat, row↔machine row). Matching uses word-start boundaries +
+  longest-keyword-wins, so `wrist curl`→Forearms but `narrow grip`≠Rows
+  (`analytics.match_slot`).
+- **Plan** — for the next split, each slot's most-recent variation is fed to
+  `recommend_progression` for a target (`analytics.build_session_plan`). Surfaced in the
+  05:30 debrief and as an ntfy push.
+- **Adherence** — `analytics.score_adherence` recomputes, per past session, what *would*
+  have been suggested and compares to what was done (hit/beat/missed); summarized in the
+  weekly report. Recomputed each run, stores nothing.
+
+`Session` labels are classified from the **exercises present** (`analytics.classify_session`:
+bench→Chest, deadlift→Deadlift, real squat→Squat, accessories-only→Arms), so the cycle
+resolver works. `backfill_sessions.py` relabels historical rows the same way (dry-run by
+default; `--apply` to write; idempotent).
 
 ---
 
@@ -174,6 +206,9 @@ later lines.
 The Notion DBs requiring manual schema: Workout Log needs `RPE` (number) + `Pain note`
 (rich text); a `Daily metrics` DB needs `Date`, `Sleep` (good/ok/bad), `Energy`
 (high/normal/low), `Note`. Code degrades gracefully when an id/property is absent.
+
+The daily planner reads `workout_plan.json` from the project root (override with
+`PLAN_CONFIG_PATH`); if it's missing or invalid, the planner is simply skipped.
 
 ---
 

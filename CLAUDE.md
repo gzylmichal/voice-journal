@@ -31,10 +31,18 @@ exists on the VPS in the old format; changes must be backward compatible.
    journal, storage, and buffered to disk.
 2. **Buffer JSON** (`buffer/YYYY-MM-DD.json`):
    `{"transcripts": [...], "pending_writes": [{batch_id, workout, tasks, events,
-   bodyweight, *_written_at}]}`. `load_buffer` must keep reading old formats.
-3. **Notion property names** (`Date`, `Weight (kg)`, `Top Set (kg)`, `Weight`,
-   etc. in `pipeline/notion_client.py`) mirror real database schemas the owner
-   cannot easily migrate. Never rename. New properties require asking first.
+   bodyweight, metrics, *_written_at, metrics_written_at}]}`. New keys are ADDITIVE —
+   `load_buffer` must keep reading entries that lack them. Query memos are NOT buffered
+   (answered + archived only; they must never enter the journal or other writes).
+3. **Notion property names** (`Date`, `Top Set (kg)`, `Weight`, `RPE`, `Pain note`,
+   `Session` in the Workout Log; the `Daily metrics` DB; `Type`/`Priority Level` in the
+   Tasks DB) mirror real database schemas the owner cannot easily migrate. Never rename.
+   New properties require asking first. Select VALUES the code emits must match the DB's
+   options — Tasks `Type` ∈ {Personal, Work, Health, Finance, Errand, Home, Other};
+   Workout `Session` ∈ {Chest, Deadlift, Squat, Arms, Other}.
+7. **`workout_plan.json`** (daily planner): `{cycle, templates, off_cycle}`. Slot
+   `match` keywords + the word-start/longest-wins rule in `analytics.match_slot` are a
+   contract with real exercise names — verify against the Workout DB before editing.
 4. **CLI flags of `voice_journal.py`** (`--mode upload|overnight|morning`) are
    invoked by systemd timers, `receiver.py` (subprocess), and `cli.py`.
 5. **`ai_client.call_ai(user_message, system_prompt, label, max_tokens,
@@ -68,6 +76,20 @@ Callers live outside the obvious module — check `cli.py`, `weekly_report.py`,
 - Don't modify: `.env*`, `gcal_token.json`, `gcal_credentials.json`,
   `*.log`, anything under `inbox/`, `buffer/`, `archive/`, `.git/`.
 
+## Daily planner & session labels
+
+- **Session is a property of the whole DAY, not a single row.** A workout day's `Session`
+  is `analytics.classify_session(all that day's exercise names)` — never classify one
+  row's exercise in isolation (a lone "Triceps Pushdown" would read as Arms). The writer
+  (`create_notion_workout_entries`) and `backfill_sessions.py` must both use it the same
+  way. The cycle resolver (`next_split`) only advances on Chest/Deadlift/Squat, so wrong
+  labels silently break the planner.
+- **Planning and adherence are deterministic — no LLM, ever.** `recommend_progression`,
+  `build_session_plan`, `score_adherence`, `detect_prs` are pure functions; never route
+  them through `ai_client`. With <2 prior sessions, show last numbers only — never invent
+  a target.
+- Planner features degrade silently when `workout_plan.json` / a Notion id is absent.
+
 ## Language
 
 Memos are Polish + English mixed, on purpose. Any keyword list, prompt, or
@@ -77,8 +99,12 @@ filler-hallucination list must cover both languages. Journal output is English.
 
 Code in this folder is the source of truth, but it runs at `/opt/voice-journal/`
 on a Hetzner VPS (see `vps-reference.md`). Nothing you change here is live until
-the owner deploys it. End every task summary with: which files must be copied to
-the VPS, and a reminder to run `python3 smoke_test.py` there after deploying.
+the owner deploys it. The owner deploys the **whole tree** with `./deploy.sh` (rsync;
+protects `.env`/`venv`/runtime data) — do NOT instruct copying individual files, which
+caused a version-skew bug (a new `voice_journal.py` against an old `pipeline/config.py`).
+End every task summary with a reminder to run `./deploy.sh` and then `python3
+smoke_test.py` on the VPS. systemd units (`*.service`/`*.timer`) install separately into
+`/etc/systemd/system/` — they are not auto-deployed.
 
 ## When uncertain
 
